@@ -1,18 +1,19 @@
 name: iOS upstream game compile probe
 
+# Only run when a build-request file changes, or via workflow_dispatch
+# (the latter requires these workflows to exist on GitHub's default branch).
 on:
+  # To request a playable IPA build on test, create or edit the request file.
   push:
     branches: [test]
     paths:
-      - 'platforms/ios/GameRuntime/**'
-      - 'platforms/ios/App/**'
-      - 'platforms/ios/project.yml'
-      - 'platforms/ios/patches/**'
-      - '.github/workflows/ios-runtime-probe.yml'
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+      - 'platforms/ios/ci/build-integrated.txt'
   workflow_dispatch:
+
+# If another manual run starts for the same branch, retire the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -43,8 +44,11 @@ jobs:
           old = "std::ffi::CStr::from_ptr(raw)"
           new = "std::ffi::CStr::from_ptr(raw.cast())"
           source = path.read_text()
-          assert source.count(old) == 1, "Upstream allocator changed; review patch before applying"
-          path.write_text(source.replace(old, new, 1))
+          if source.count(old) == 1:
+              path.write_text(source.replace(old, new, 1))
+          else:
+              # Newer upstream already casts its mimalloc pointer correctly.
+              assert source.count(new) == 1, "Upstream allocator changed; review patch"
           PY
           # All modifications stay in the ephemeral runner checkout.
           git diff -- crates/horizon-threads/src/allocator_stats.rs
@@ -105,7 +109,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("crates/horizon-client/src/game/launch_options.rs")
+          path = Path("crates/horizon-client/src/game/runtime/launch_options.rs")
           source = path.read_text()
           old = '            resources: if sibling.join("horizon-resources.json").exists() {'
           new = '''            resources: if cfg!(target_os = "ios") {
@@ -117,7 +121,7 @@ jobs:
           assert source.count(old) == 1, "Upstream resource path parser changed"
           path.write_text(source.replace(old, new, 1))
           PY
-          git diff -- crates/horizon-client/src/game/launch_options.rs
+          git diff -- crates/horizon-client/src/game/runtime/launch_options.rs
       - name: Select Metal as Horizon's only iOS graphics backend
         shell: bash
         run: |
@@ -162,15 +166,15 @@ jobs:
                   }
               }
           }''')
-          patch(entry, "pub fn main_with(mods: crate::mod_api::Mods) {",
-                '''pub fn main_with(mods: crate::mod_api::Mods) {
-              nova_entry_trace("main_with.begin");''')
-          patch(entry, "    if let Err(error) = game::run_with() {",
+          patch(entry, "    let _ = CODE_RUNTIME.set(code);",
+                '''    nova_entry_trace("main_with.begin");
+              let _ = CODE_RUNTIME.set(code);''')
+          patch(entry, "    if let Err(error) = game::run_with(options, native) {",
                 '''    nova_entry_trace("game.run_with.begin");
-              if let Err(error) = game::run_with() {
+              if let Err(error) = game::run_with(options, native) {
                   nova_entry_trace(&format!("game.run_with.error: {error}"));''')
 
-          loading = Path("crates/horizon-client/src/game/loading_screen.rs")
+          loading = Path("crates/horizon-client/src/game/runtime/loading_screen.rs")
           patch(loading, "pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {",
               '''pub(super) fn nova_diag(stage: &str) {
               use std::io::Write as _;
@@ -287,13 +291,13 @@ jobs:
                 '                startup_step(format_args!("renderer.new.open_device.begin"));\n                let _step = crate::spans::startup::step("renderer.open_device");')
           patch(gfx, '    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();',
                 '    startup_step(format_args!("gpu.open_device.begin"));\n    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();')
-          patch(gfx, '        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {',
-                '        startup_step(format_args!("gpu.open_device.try backends={order:?}"));\n        match open_device_with(window, offscreen, &order, layers, allow_cpu).await {')
+          patch(gfx, '        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {',
+                '        startup_step(format_args!("gpu.open_device.try backends={order:?}"));\n        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {')
 
           # The device log reached renderer.boot.begin but no gpu or Rust
           # panic checkpoint. Trace the synchronous loading_renderer wrapper
           # before Renderer::new (which may fail or abort first).
-          loading_window = Path("crates/horizon-client/src/game/loading_window.rs")
+          loading_window = Path("crates/horizon-client/src/game/runtime/loading_window.rs")
           patch(loading_window, "    static FORCEFIELD: [u8; 4] = [0; 4];",
                 '    loading_screen::nova_diag("loading_renderer.entry");\n    static FORCEFIELD: [u8; 4] = [0; 4];')
           patch(loading_window, "    let panorama = panorama\n        .cloned()",
@@ -384,16 +388,16 @@ jobs:
               let mut renderer = nova_ios_poll_renderer(future)?;
               loading_screen::nova_diag("loading_renderer.poll.completed");''')
 
-          loader = Path("crates/horizon-client/src/game/resource_loader.rs")
+          loader = Path("crates/horizon-client/src/game/runtime/resource_loader.rs")
           patch(loader, "    let progress = Progress::new();",
                 "    loading_screen::nova_diag(\"resources.loading.begin\");\n    let progress = Progress::new();")
           patch(loader, "    let result = EventLoop::new()?.run_app(&mut app);",
                 "    loading_screen::nova_diag(\"winit.event-loop.begin\");\n    let event_loop = EventLoop::new()?;\n    loading_screen::nova_diag(\"winit.event-loop.created\");\n    let result = event_loop.run_app(&mut app);\n    loading_screen::nova_diag(\"winit.run-app.returned\");")
           PY
           git diff --stat -- crates/horizon-client/src/entry.rs \
-            crates/horizon-client/src/game/loading_screen.rs \
-            crates/horizon-client/src/game/resource_loader.rs \
-            crates/horizon-client/src/game/loading_window.rs \
+            crates/horizon-client/src/game/runtime/loading_screen.rs \
+            crates/horizon-client/src/game/runtime/resource_loader.rs \
+            crates/horizon-client/src/game/runtime/loading_window.rs \
             crates/horizon-client-render/src/gfx.rs
 
       - name: Reduce iOS renderer async poll stack usage
@@ -408,14 +412,14 @@ jobs:
         run: |
           python3 platforms/ios/patches/deep_stack_callbacks.py
           git diff --check
-          git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/Cargo.toml
+          git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs crates/horizon-client/Cargo.toml
 
       - name: Apply iOS native viewport and touch pointer adaptation
         shell: bash
         run: |
           python3 platforms/ios/patches/ios_display_input.py
           git diff --check
-          git diff --stat -- crates/horizon-client/src/game/loading_screen.rs crates/horizon-client/src/game/window_handler.rs
+          git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs crates/horizon-client/src/game/runtime/window_handler.rs
 
       - name: Bridge iOS overlay buttons to Horizon input mappings
         shell: bash
