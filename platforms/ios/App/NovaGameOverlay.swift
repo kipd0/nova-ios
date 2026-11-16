@@ -61,7 +61,6 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private let textField = UITextField(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
     private var isEditingLayout = false
     private var isInMenu = false
-    private var firstAppearance = true
 
     /// Run before Horizon enters winit; wait until winit creates its UIWindow.
     static func scheduleInstall() {
@@ -296,15 +295,13 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         overlay.blocksGameplay = true
         nova_ios_set_overlay_active(true)
         setControlsVisible(false)
-        let view = NovaGameMenuView(
-            isFirstAppearance: firstAppearance,
+        let view = NovaMenuView(
             onPlay: { [weak self] in self?.hidePanel() },
             onEdit: { [weak self] in self?.showEditor() },
             onSettings: { [weak self] in self?.showSettings() },
             onLogs: { [weak self] in self?.showLogs() },
             onClose: { [weak self] in self?.requestClose() }
         )
-        firstAppearance = false
         present(view)
     }
 
@@ -437,51 +434,6 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         nova_ios_input_key(NovaTouchLayouts.keyCode("Enter"), false)
         textField.resignFirstResponder()
         return false
-    }
-}
-
-private struct NovaGameMenuView: View {
-    let isFirstAppearance: Bool
-    let onPlay: () -> Void
-    let onEdit: () -> Void
-    let onSettings: () -> Void
-    let onLogs: () -> Void
-    let onClose: () -> Void
-    @State private var confirmClose = false
-
-    var body: some View {
-        ZStack {
-            NovaBlurBackground(style: .systemMaterialDark).ignoresSafeArea()
-            Color.black.opacity(0.5).ignoresSafeArea()
-            ScrollView {
-                VStack(spacing: 16) {
-                    Text("Nova").font(.system(size: 46, weight: .bold, design: .rounded))
-                    Text("Horizon for iOS / iPadOS")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.7))
-                    Button(isFirstAppearance ? "Play" : "Return to Game", action: onPlay)
-                        .buttonStyle(.borderedProminent)
-                    Button("Touch Layout", action: onEdit).buttonStyle(.bordered)
-                    Button("Mouse & Touch Settings", action: onSettings).buttonStyle(.bordered)
-                    Button("Show Logs", action: onLogs).buttonStyle(.bordered)
-                    Button("Force Close") { confirmClose = true }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                    Text("Open Nova using your Menu touch button.")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-                .font(.headline)
-                .frame(maxWidth: 480)
-                .frame(maxWidth: .infinity)
-                .padding(32)
-            }
-        }
-        .foregroundStyle(.white)
-        .confirmationDialog("Force close Nova?", isPresented: $confirmClose) {
-            Button("Force Close App", role: .destructive, action: onClose)
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("The entire app exits immediately. Unsaved world changes can be lost.") }
     }
 }
 
