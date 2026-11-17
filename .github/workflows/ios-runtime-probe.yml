@@ -351,12 +351,18 @@ jobs:
               loading_screen::nova_diag("loading_renderer.display-reading.ready");
               let future = Renderer::new(''')
           patch(loading_window, '''        &horizon_client::graphics::Graphics::default(),
-                  Default::default(),
+                  horizon_client::gfx::FrameRequest {
+                      ray_tracing: rays,
+                      ..Default::default()
+                  },
                   previous.map(|r| r.display_reading()).unwrap_or_default(),
               ))?;
               loading_screen::nova_diag("loading_renderer.renderer-new.done");''',
                 '''        &graphics,
-                  Default::default(),
+                  horizon_client::gfx::FrameRequest {
+                      ray_tracing: rays,
+                      ..Default::default()
+                  },
                   display,
               );
               loading_screen::nova_diag(&format!(
