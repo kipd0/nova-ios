@@ -142,7 +142,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("crates/horizon-client-render/src/gfx.rs")
+          path = Path("crates/horizon-client-render/src/gfx/device.rs")
           source = path.read_text()
           old = '    if os == "macos" || wgpu_backend {\n        return vec![Backends::default()];\n    }'
           new = '''    // Nova iOS: UIKit provides a CAMetalLayer, not Vulkan or desktop GL.
@@ -255,6 +255,7 @@ jobs:
           # Nova's launcher and engine breadcrumbs. This also catches driver
           # crashes during instance creation/surface acquisition.
           gfx = Path("crates/horizon-client-render/src/gfx.rs")
+          device = Path("crates/horizon-client-render/src/gfx/device.rs")
           patch(gfx, '''fn startup_step(step: std::fmt::Arguments) {
               log::info!("Horizon renderer: {step}");''',
                 '''fn startup_step(step: std::fmt::Arguments) {
@@ -266,11 +267,11 @@ jobs:
                   }
               }
               log::info!("Horizon renderer: {step}");''')
-          patch(gfx, "    let instance = open(wgpu::Dx12Compiler::Fxc);",
+          patch(device, "    let instance = open(wgpu::Dx12Compiler::Fxc);",
                 '''    startup_step(format_args!("backend.{name}.instance.begin"));
                   let instance = open(wgpu::Dx12Compiler::Fxc);
                   startup_step(format_args!("backend.{name}.instance.created"));''')
-          patch(gfx, '''    let surface = if offscreen {
+          patch(device, '''    let surface = if offscreen {
                   None
               } else {
                   Some(
@@ -281,13 +282,13 @@ jobs:
                   } else {
                       Some(
                           instance''')
-          patch(gfx, '''    let adapter = instance
+          patch(device, '''    let adapter = instance
                   .request_adapter(&wgpu::RequestAdapterOptions {''',
                 '''    startup_step(format_args!("gpu.surface.created"));
                   startup_step(format_args!("gpu.adapter.begin"));
                   let adapter = instance
                       .request_adapter(&wgpu::RequestAdapterOptions {''')
-          patch(gfx, '''        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+          patch(device, '''        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
               Ok((surface, adapter))''',
                 '''        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
               startup_step(format_args!("gpu.adapter.created"));
@@ -304,9 +305,9 @@ jobs:
                       instance,''')
           patch(gfx, '                let _step = crate::spans::startup::step("renderer.open_device");',
                 '                startup_step(format_args!("renderer.new.open_device.begin"));\n                let _step = crate::spans::startup::step("renderer.open_device");')
-          patch(gfx, '    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();',
+          patch(device, '    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();',
                 '    startup_step(format_args!("gpu.open_device.begin"));\n    let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();')
-          patch(gfx, '        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {',
+          patch(device, '        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {',
                 '        startup_step(format_args!("gpu.open_device.try backends={order:?}"));\n        match open_device_with(window, offscreen, &order, needs, allow_cpu).await {')
 
           # The device log reached renderer.boot.begin but no gpu or Rust
@@ -419,7 +420,8 @@ jobs:
             crates/horizon-client/src/game/runtime/loading_screen.rs \
             crates/horizon-client/src/game/runtime/resource_loader.rs \
             crates/horizon-client/src/game/runtime/loading_window.rs \
-            crates/horizon-client-render/src/gfx.rs
+            crates/horizon-client-render/src/gfx.rs \
+            crates/horizon-client-render/src/gfx/device.rs
 
       - name: Reduce iOS renderer async poll stack usage
         shell: bash
