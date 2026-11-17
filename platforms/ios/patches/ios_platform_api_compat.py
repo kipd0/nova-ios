@@ -61,4 +61,14 @@ replace_once(
                 &event.key_without_modifiers(),
             );""",
 )
+
+# The game facade retains the desktop holder capability marker for launcher
+# detection. iOS has no holder module and starts in-process from Nova's host.
+replace_once(
+    "crates/horizon-game/src/lib.rs",
+    "    std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);",
+    '    #[cfg(not(target_os = "ios"))]\\n'
+    "    std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);",
+)
+
 print("Nova iOS: desktop-only holder and modifier APIs guarded for iOS")
