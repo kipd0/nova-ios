@@ -458,6 +458,13 @@ jobs:
           python3 platforms/ios/patches/ios_audio_diagnostics.py
           git diff --check
 
+      - name: Adapt desktop-only Horizon APIs for iOS
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_platform_api_compat.py
+          git diff --check
+          git diff --stat -- crates/horizon-client/src/entry.rs crates/horizon-client/src/game/runtime/window_handler.rs
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |
