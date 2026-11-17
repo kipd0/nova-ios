@@ -67,7 +67,7 @@ replace_once(
 replace_once(
     "crates/horizon-game/src/lib.rs",
     "    std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);",
-    '    #[cfg(not(target_os = "ios"))]\\n'
+    '    #[cfg(not(target_os = "ios"))]\n'
     "    std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);",
 )
 
