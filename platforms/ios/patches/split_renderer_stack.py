@@ -17,9 +17,12 @@ from pathlib import Path
 ROOT = Path("crates/horizon-client-render/src/gfx.rs")
 text = ROOT.read_text(encoding="utf-8")
 
-impl = "impl Renderer {\n    pub async fn new(\n"
-assert text.count(impl) == 1, "Renderer::new moved; review upstream before patching"
-start = text.index("    pub async fn new(\n", text.index(impl))
+# Upstream can add other methods before Renderer::new (and has multiple impl blocks).
+# Locate the unique constructor rather than requiring it to be first in an impl.
+constructor = "    pub async fn new(\n"
+assert text.count(constructor) == 1, "Renderer::new moved; review upstream before patching"
+start = text.index(constructor)
+assert text.rfind("impl Renderer {", 0, start) >= 0, "Renderer::new impl changed"
 signature_end_marker = "    ) -> Result<Self> {\n"
 signature_end = text.index(signature_end_marker, start) + len(signature_end_marker)
 rest_marker = "        // Computed once: the sprite arrays, the shaders' constants and the"
@@ -54,8 +57,8 @@ args = (
     "window", "offscreen", "sprite_pixels", "sprite_size",
     "sprite_minimum_size", "layers", "sprite_mips", "animations",
     "hud_atlas", "glint", "glint_armor", "forcefield", "panorama_faces",
-    "prepared", "previous", "api", "translucent_batching", "shader_pack",
-    "settings", "request", "display",
+    "prepared", "previous", "api", "translucent_batching",
+    "(shader_pack, pack_starts_wide)", "settings", "request", "display",
 )
 for name in args:
     assert f"        {name}:" in signature, f"Renderer argument {name} changed"
