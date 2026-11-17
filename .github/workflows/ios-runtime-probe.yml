@@ -5,9 +5,10 @@ name: iOS upstream game compile probe
 on:
   # To request a playable IPA build on test, create or edit the request file.
   push:
-    branches: [test]
+    branches: [test, main]
     paths:
       - 'platforms/ios/ci/build-integrated.txt'
+      - 'platforms/ios/patches/ios_guest_stack_startup.py'
   workflow_dispatch:
 
 # If another manual run starts for the same branch, retire the older one.
@@ -464,6 +465,13 @@ jobs:
           python3 platforms/ios/patches/ios_platform_api_compat.py
           git diff --check
           git diff --stat -- crates/horizon-client/src/entry.rs crates/horizon-client/src/game/runtime/window_handler.rs
+
+      - name: Bypass main-thread guest stack startup probe on iOS only
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_guest_stack_startup.py
+          git diff --check
+          git diff --stat -- crates/horizon-guest-stack/src/lib.rs
 
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
