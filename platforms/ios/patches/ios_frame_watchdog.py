@@ -84,14 +84,16 @@ change(
     "impl ApplicationHandler for App {\n",
     watchdog + "\nimpl ApplicationHandler for App {\n",
 )
+# Attach the monitor to the iOS ApplicationHandler wrapper. An earlier CI
+# diagnostics step has already modified Loading::resumed to emit winit.resumed.
 change(
     loading,
-    "    pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {\n"
-    "        if self.window.is_some() {",
-    "    pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {\n"
+    "        nova_ios_deep(|| self.resumed_here(event_loop));",
     "        #[cfg(target_os = \"ios\")]\n"
-    "        nova_ios_start_watchdog(self.progress.value.clone());\n"
-    "        if self.window.is_some() {",
+    "        if let App::Loading(loading) = self {\n"
+    "            nova_ios_start_watchdog(loading.progress.value.clone());\n"
+    "        }\n"
+    "        nova_ios_deep(|| self.resumed_here(event_loop));",
 )
 change(
     loading,
@@ -126,17 +128,18 @@ change(
     "        }\n"
     "    }",
 )
+# Do not assume the exact contents of the guarded arm: the primary workflow
+# has already inserted renderer.title.frame-presented logging into that arm.
 change(
     loading,
-    "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {\n"
-    "                    self.title_drawn = true;\n"
-    "                }\n"
-    "                Ok(_) => {}",
+    "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {",
     "                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {\n"
     "                    #[cfg(target_os = \"ios\")]\n"
-    "                    NOVA_IOS_LOADING_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);\n"
-    "                    self.title_drawn = true;\n"
-    "                }\n"
+    "                    NOVA_IOS_LOADING_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);",
+)
+change(
+    loading,
+    "                Ok(_) => {}",
     "                Ok(true) => {\n"
     "                    #[cfg(target_os = \"ios\")]\n"
     "                    NOVA_IOS_LOADING_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);\n"
