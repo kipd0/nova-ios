@@ -9,6 +9,7 @@ on:
     paths:
       - 'platforms/ios/ci/build-integrated.txt'
       - 'platforms/ios/patches/ios_guest_stack_startup.py'
+      - 'platforms/ios/patches/ios_resource_handoff.py'
   workflow_dispatch:
 
 # If another manual run starts for the same branch, retire the older one.
@@ -472,6 +473,13 @@ jobs:
           python3 platforms/ios/patches/ios_guest_stack_startup.py
           git diff --check
           git diff --stat -- crates/horizon-guest-stack/src/lib.rs
+
+      - name: Wait for completed world tables before iOS game handoff
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_resource_handoff.py
+          git diff --check
+          git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs
 
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
