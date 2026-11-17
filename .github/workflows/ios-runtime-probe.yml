@@ -106,10 +106,10 @@ jobs:
               "Upstream raw key handling changed; review iOS compatibility"
           )
           source = source.replace(scan_import,
-              '    #[cfg(not(target_os = "ios"))]\\n' + scan_import)
+              '    #[cfg(not(target_os = "ios"))]\n' + scan_import)
           source = source.replace(scan_code,
-              '        #[cfg(not(target_os = "ios"))]\\n' + scan_code
-              + '\\n        #[cfg(target_os = "ios")]\\n'
+              '        #[cfg(not(target_os = "ios"))]\n' + scan_code
+              + '\n        #[cfg(target_os = "ios")]\n'
               + '        PhysicalKey::Code(_) => 0, // No native scancode on UIKit.')
           path.write_text(source)
           PY
