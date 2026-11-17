@@ -11,6 +11,14 @@ on:
       - 'platforms/ios/patches/ios_guest_stack_startup.py'
       - 'platforms/ios/patches/ios_resource_handoff.py'
   workflow_dispatch:
+  # Share the same iOS build steps with an alternate-runner workflow.
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub-hosted macOS runner label
+        type: string
+        required: false
+        default: macos-15
 
 # If another manual run starts for the same branch, retire the older one.
 concurrency:
@@ -22,7 +30,7 @@ permissions:
 
 jobs:
   original-game-ios-compile:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
