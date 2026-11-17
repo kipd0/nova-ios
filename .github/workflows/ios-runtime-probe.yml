@@ -491,6 +491,13 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs
 
+      - name: Install iOS frame and startup watchdog diagnostics
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_frame_watchdog.py
+          git diff --check
+          git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs crates/horizon-client/src/game/runtime/resource_load.rs
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |

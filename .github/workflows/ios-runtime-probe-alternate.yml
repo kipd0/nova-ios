@@ -3,6 +3,7 @@ name: Nova IPA - alternate macOS runner
 # Start this from Actions > Nova IPA - alternate macOS runner > Run workflow.
 # The first push creates an initial run on macOS 26 Intel.
 # Pick a different supported runner if one is queued for too long.
+# Trigger the iOS frame watchdog build from main (17 Nov 2026).
 on:
   workflow_dispatch:
     inputs:
