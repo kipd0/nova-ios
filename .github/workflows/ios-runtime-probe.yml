@@ -98,6 +98,19 @@ jobs:
           assert source.count(old_import) == 1 and source.count(old_match) == 1
           source = source.replace(old_import, '    // iOS: use platform-provided logical keys (modifier supplement unavailable).')
           source = source.replace(old_match, '    match &event.logical_key {')
+          # Winit exposes PhysicalKeyExtScancode on desktop only. iOS has
+          # physical key names but no native scancode conversion API.
+          scan_import = '    use winit::platform::scancode::PhysicalKeyExtScancode;'
+          scan_code = '        PhysicalKey::Code(_) => physical.to_scancode().unwrap_or(0),'
+          assert source.count(scan_import) == 1 and source.count(scan_code) == 1, (
+              "Upstream raw key handling changed; review iOS compatibility"
+          )
+          source = source.replace(scan_import,
+              '    #[cfg(not(target_os = "ios"))]\\n' + scan_import)
+          source = source.replace(scan_code,
+              '        #[cfg(not(target_os = "ios"))]\\n' + scan_code
+              + '\\n        #[cfg(target_os = "ios")]\\n'
+              + '        PhysicalKey::Code(_) => 0, // No native scancode on UIKit.')
           path.write_text(source)
           PY
           git diff -- crates/horizon-client-input/src/keybinds.rs
