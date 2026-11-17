@@ -6,8 +6,8 @@
 
 mod diagnostics;
 
-#[global_allocator]
-static ALLOCATOR: horizon_game::Allocator = horizon_game::ALLOCATOR;
+// Horizon's client crate owns the process-wide allocator. Do not declare a
+// second one here: that conflicts when the original game is linked into Nova.
 
 /// Keep the official game's entry reachable in the final iOS binary.
 /// The game implementation comes from the original upstream crates.
@@ -127,12 +127,10 @@ pub extern "C" fn horizon_ios_start_original_game(
         diagnostics::trace(&format!("rust.panic: {info}"));
         previous_hook(info);
     }));
-    // The logger is initialized later by Horizon. Install the callback now so
-    // all normal in-game records join the per-launch Nova diagnostics file.
-    horizon_client_render::logging::set_line_hook(
-        |_, _, _, formatted| diagnostics::game_log(formatted),
-    );
-    diagnostics::trace("rust.log-forwarding-enabled");
+    // Horizon initializes and writes its own game log during startup.
+    // Its previous line-hook API is no longer exported. Keep Nova's early
+    // startup and panic traces; game logs remain in Horizon's logs directory.
+    diagnostics::trace("rust.game-log-owned-by-horizon");
     diagnostics::trace("rust.start.horizon-official-entry");
     horizon_ios_original_game_entry();
     diagnostics::trace("rust.start.horizon-returned");
