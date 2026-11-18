@@ -553,7 +553,8 @@ jobs:
             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath Build/Derived CODE_SIGNING_ALLOWED=NO \
             HORIZON_IOS_RUST_LIB=horizon_ios_game_runtime \
-            NOVA_GIT_COMMIT="$GITHUB_SHA" NOVA_GIT_RUN="$GITHUB_RUN_ID" build \
+            NOVA_GIT_COMMIT="$GITHUB_SHA" NOVA_GIT_RUN="$GITHUB_RUN_ID" \
+            NOVA_MSA_CLIENT_ID="${{ vars.HORIZON_MSA_CLIENT_ID }}" build \
             2>&1 | tee ios-app-link.log
           test -d Build/Derived/Build/Products/Release-iphoneos/Nova.app
       - name: Package unsigned integrated iOS app
