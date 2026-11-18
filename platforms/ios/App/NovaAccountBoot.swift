@@ -36,14 +36,15 @@ enum NovaAccountBoot {
                 }
                 let completed = DispatchSemaphore(value: 0)
                 let outcome = Outcome()
+                let savedSecrets = secrets
                 let task = Task.detached(priority: .userInitiated) {
                     do {
-                        let renewed = try await NovaMicrosoftAccount.refresh(clientID, secrets.refresh)
+                        let renewed = try await NovaMicrosoftAccount.refresh(clientID, savedSecrets.refresh)
                         try Task.checkCancellation()
                         // Persist rotation before calling Xbox/Minecraft, as the
                         // old refresh token may already have been invalidated.
                         try vault.write(AccountSecrets(refresh: renewed.refresh,
-                                                       token: secrets.token, expires: secrets.expires),
+                                                       token: savedSecrets.token, expires: savedSecrets.expires),
                                         for: selected.uuid)
                         let (identity, credentials) = try await NovaMicrosoftAccount.exchange(microsoft: renewed)
                         guard identity.uuid == selected.uuid else {
@@ -64,7 +65,7 @@ enum NovaAccountBoot {
                     return
                 }
                 switch outcome.take() {
-                case let .success((identity, credentials)):
+                case let .some(.success((identity, credentials))):
                     profile = identity
                     secrets = credentials
                     if profile != selected {
