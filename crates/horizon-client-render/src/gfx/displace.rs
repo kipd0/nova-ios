@@ -5,11 +5,12 @@
 //!
 //! Each frame the solid quads of the sections around the camera are written out of the arena
 //! into one buffer as vertices (copied, or from the compact layout's records by ray tracing's
-//! unpacking, `ray_scene::unpack_page`), a compute pass picks the ones the grid draws (opaque, with relief, within
+//! unpacking, `rt::scene::unpack_page`), a compute pass picks the ones the grid draws (opaque, with relief, within
 //! the distance, facing the eye and in view) into an indirect draw, and the material's
 //! displaced pipeline draws one instance a quad.
 
-use super::surface_setup::ray_query::ray_scene::{RtJob, unpack_page, unpack_pipeline};
+use super::external::Near;
+use super::rt::scene::{RtJob, unpack_page, unpack_pipeline};
 use crate::mesher::TerrainVertex;
 
 /// The solid quads the grid can draw a frame, and the sections they come from.
@@ -384,16 +385,6 @@ struct Section {
     pad: [u32; 2],
 }
 
-/// A section the grid may draw from this frame: its arena page, the base vertex of its solid
-/// draws (`SectionGpu::solid_base`: in the compact layout past `PACKED_BASE`), its solid quads
-/// and its camera-relative origin.
-pub struct Near<'a> {
-    pub buffer: &'a wgpu::Buffer,
-    pub base: u32,
-    pub quads: u32,
-    pub origin: [f32; 3],
-}
-
 /// One list of picked quads and its indirect draw.
 pub struct Picks {
     /// The grid's cells along a face's side.
@@ -421,6 +412,9 @@ pub struct Displacement {
     pub shadow: Option<Picks>,
     /// Group 1's layout for the grid's pipelines.
     pub draw_layout: wgpu::BindGroupLayout,
+    /// For a pack that reads the quads' looks, the picked quads' looks, one a quad, and
+    /// their group (`looks::GROUP`).
+    looks: Option<(wgpu::Buffer, wgpu::BindGroup)>,
     /// CPU-side section table reused between displacement preparation passes.
     table: Vec<Section>,
     /// Sections the pick ran over this frame (0: nothing to draw).
@@ -468,6 +462,7 @@ impl Displacement {
         steps: bool,
         normals: &wgpu::TextureView,
         shadow: bool,
+        looks: Option<&wgpu::BindGroupLayout>,
     ) -> Self {
         let buffer = |label, size, usage| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -602,6 +597,16 @@ impl Displacement {
             compilation_options: Default::default(),
             cache: None,
         });
+        let looks = looks.map(|layout| {
+            let size = MAX_QUADS * super::arena::LOOK_BYTES;
+            let looks = buffer("Displacement looks", size, U::STORAGE | U::COPY_DST);
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Displacement looks"),
+                layout,
+                entries: &[entry(0, looks.as_entire_binding())],
+            });
+            (looks, group)
+        });
         Self {
             distance,
             vertices,
@@ -611,6 +616,7 @@ impl Displacement {
             view,
             shadow,
             draw_layout,
+            looks,
             table: Vec::new(),
             drawn: 0,
         }
@@ -726,6 +732,9 @@ impl Displacement {
         }
         pass.set_pipeline(pipeline);
         pass.set_bind_group(1, &picks.draw_group, &[]);
+        if let Some((_, group)) = &self.looks {
+            pass.set_bind_group(super::looks::GROUP, group, &[]);
+        }
         pass.draw_indirect(&picks.draw, 0);
     }
 }
@@ -771,7 +780,7 @@ mod tests {
             eprintln!("displacement pick on {} ({name})", adapter.get_info().name);
             let normals = normals(&device, &queue);
             let mut displacement =
-                super::Displacement::new(&device, 12.0, 16, false, &normals, true);
+                super::Displacement::new(&device, 12.0, 16, false, &normals, true, None);
             for (at, view) in [
                 ([0.0, 0.0], 1),
                 ([1.25, 0.0], 1),
@@ -885,7 +894,7 @@ mod tests {
             let (one, two) = (page(&one), page(&two));
             let normals = normals(&device, &queue);
             let mut displacement =
-                super::Displacement::new(&device, 12.0, 16, false, &normals, false);
+                super::Displacement::new(&device, 12.0, 16, false, &normals, false, None);
             let near = |buffer, base, v: &[TerrainVertex]| super::Near {
                 buffer,
                 base,
