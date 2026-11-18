@@ -67,8 +67,8 @@ enum NovaDiagnostics {
     }
 
     private static func sanitized(_ message: String) -> String {
-        let flattened = message.replacingOccurrences(of: "\\n", with: " ")
-            .replacingOccurrences(of: "\\r", with: " ")
+        let flattened = message.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
         let lower = flattened.lowercased()
         let privateMarkers = [
             "access_token", "refresh_token", "id_token", "device_code",
@@ -99,9 +99,8 @@ enum NovaDiagnostics {
         defer { lock.unlock() }
         guard let url = logURLLocked() else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
-        let sanitized = stage.replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        let bytes = Array("[\(stamp)] [swift] \(sanitized)\n".utf8)
+        let safeStage = sanitized(stage)
+        let bytes = Array("[\(stamp)] [swift] \(safeStage)\n".utf8)
         // O_APPEND prevents concurrent Rust/Swift writes from seeking to an
         // outdated end-of-file offset and overwriting one another.
         let descriptor = url.path.withCString { Darwin.open($0, O_WRONLY | O_APPEND) }
