@@ -1,3 +1,7 @@
+// Derived from Kelly-Inc/horizon-ios packaging/ios/Launcher code.
+// Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
+// Licensed under MIT; see platforms/ios/KELLY_AUTH_LICENSE.txt.
+
 import Security
 import SwiftUI
 import UIKit
