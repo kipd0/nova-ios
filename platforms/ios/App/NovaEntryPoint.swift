@@ -39,6 +39,9 @@ enum NovaEntryPoint {
                 } else {
                     NovaDiagnostics.record("boot.runtime-diagnostics-unavailable")
                 }
+                // Select and renew the Microsoft session before Horizon reads it.
+                // All tokens remain in Keychain or a private, one-use tmp file.
+                NovaAccountBoot.prepare()
                 NovaAudio.configure()
                 NovaGameOverlay.scheduleInstall()
                 NovaDiagnostics.record("boot.calling-original-game")
