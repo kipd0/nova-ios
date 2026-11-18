@@ -124,7 +124,8 @@ pub extern "C" fn horizon_ios_start_original_game(
     std::panic::set_hook(Box::new(move |info| {
         // An unexpected Rust panic may terminate the iOS process before
         // the renderer reports a normal error.
-        diagnostics::trace(&format!("rust.panic: {info}"));
+        // Never export arbitrary panic payloads to Files-visible diagnostics.
+        diagnostics::trace("rust.panic");
         previous_hook(info);
     }));
     // Horizon initializes and writes its own game log during startup.
