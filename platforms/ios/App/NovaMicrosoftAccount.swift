@@ -33,10 +33,10 @@ final class NovaMicrosoftAccount: ObservableObject {
     nonisolated static var clientID: String? {
         (Bundle.main.object(forInfoDictionaryKey: "HorizonMSAClientID") as? String)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 }
+            .flatMap { $0.isEmpty || $0.hasPrefix("$(") || UUID(uuidString: $0) == nil ? nil : $0 }
     }
     init(defaults: UserDefaults = .standard, vault: AccountVault = KeychainAccountVault(),
-         session: URLSession = .shared, clock: @escaping () -> Date = Date.init,
+         session: URLSession = URLSession(configuration: .ephemeral), clock: @escaping () -> Date = Date.init,
          sleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
          client: String? = NovaMicrosoftAccount.clientID) {
         self.defaults = defaults; self.vault = vault; net = AccountNet(session: session)
@@ -151,8 +151,8 @@ final class NovaMicrosoftAccount: ObservableObject {
                 if let i = accounts.firstIndex(where: { $0.uuid == added.uuid }) { accounts[i] = added }
                 else { accounts.append(added) }
                 try saveCatalog()
-                // Adding does not replace the current selection until all service
-                // steps succeeded. Play performs the final, awaited bridge transfer.
+                // Select only after ownership/profile validation and Keychain storage.
+                // The newly selected identity takes effect after a full restart.
                 profile = added; invalidSelection = false; selection = UUID(); try saveCatalog()
                 state = .idle; signing = nil
             } catch is CancellationError {
@@ -203,7 +203,7 @@ final class NovaMicrosoftAccount: ObservableObject {
     }
 
     nonisolated static func refresh(_ client: String, _ token: String) async throws -> (access: String, refresh: String) {
-        let net = AccountNet(session: .shared)
+        let net = AccountNet(session: URLSession(configuration: .ephemeral))
         let answer = try await net.form(
             "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
             ["grant_type": "refresh_token", "client_id": client, "refresh_token": token,
@@ -225,7 +225,7 @@ final class NovaMicrosoftAccount: ObservableObject {
 
     /// Steps 3 to 7: Xbox Live, XSTS, Minecraft, ownership and the profile; then keep it all.
     nonisolated static func exchange(microsoft: (access: String, refresh: String)) async throws -> (Profile, AccountSecrets) {
-        let net = AccountNet(session: .shared)
+        let net = AccountNet(session: URLSession(configuration: .ephemeral))
         let xbl = try await net.json("https://user.auth.xboxlive.com/user/authenticate", [
             "Properties": ["AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com",
                            "RpsTicket": "d=\(microsoft.access)"],
