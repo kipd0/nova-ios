@@ -22,7 +22,7 @@ final class NovaMicrosoftAccount: ObservableObject {
     private let now: () -> Date
     private let sleep: (UInt64) async throws -> Void
     private let client: String?
-        private var signing: Task<Void, Never>?
+    private var signing: Task<Void, Never>?
     private var generation = UUID()
     private var selection = UUID()
     private var renewals: [String: Task<(Profile, AccountSecrets), Error>] = [:]
@@ -34,7 +34,6 @@ final class NovaMicrosoftAccount: ObservableObject {
         (Bundle.main.object(forInfoDictionaryKey: "HorizonMSAClientID") as? String)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 }
-            
     }
     init(defaults: UserDefaults = .standard, vault: AccountVault = KeychainAccountVault(),
          session: URLSession = .shared, clock: @escaping () -> Date = Date.init,
@@ -81,7 +80,7 @@ final class NovaMicrosoftAccount: ObservableObject {
     }
     func select(_ selected: Profile?) {
         cancel(); selection = UUID(); profile = selected; invalidSelection = false
-        do { try saveCatalog() } catch { state = .failed(error.localizedDescription) }
+        do { try saveCatalog() } catch { state = .failed((error as? AccountError)?.localizedDescription ?? "Account operation failed. Try again.") }
     }
     func remove(_ account: Profile) async {
         cancel()
@@ -96,7 +95,7 @@ final class NovaMicrosoftAccount: ObservableObject {
             accounts.removeAll { $0.uuid == account.uuid }
             if profile?.uuid == account.uuid { selection = UUID(); profile = nil }
             try saveCatalog()
-        } catch { state = .failed(error.localizedDescription) }
+        } catch { state = .failed((error as? AccountError)?.localizedDescription ?? "Account operation failed. Try again.") }
     }
     func signOut() { select(nil) }
 
