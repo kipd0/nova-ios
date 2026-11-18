@@ -9,6 +9,8 @@ enum NovaAccountBoot {
     /// Main-thread startup entry. Network refresh runs on a detached worker:
     /// the game cannot start until its initial identity has been selected.
     static func prepare() {
+        // Wipe any leftover private handoff, including after sign-out or a crash.
+        removeStaleHandoffs()
         unsetenv("HORIZON_SESSION_FILE")
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: issueKey)
@@ -119,17 +121,23 @@ enum NovaAccountBoot {
         }
     }
 
+    private static func removeStaleHandoffs() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NovaAccountSessions", isDirectory: true)
+        if let stale = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) {
+            for file in stale where file.lastPathComponent.hasPrefix("session-") {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
     private static func createPrivateHandoff(_ content: Data) throws -> URL {
         let files = FileManager.default
         let directory = files.temporaryDirectory.appendingPathComponent("NovaAccountSessions", isDirectory: true)
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        // Remove any leftover handoffs from earlier interrupted launches.
-        if let stale = try? files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-            for file in stale where file.lastPathComponent.hasPrefix("session-") {
-                try? files.removeItem(at: file)
-            }
-        }
         let url = directory.appendingPathComponent("session-\(UUID().uuidString).json")
         let descriptor = url.path.withCString {
             Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))
