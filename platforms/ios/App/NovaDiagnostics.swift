@@ -81,8 +81,8 @@ enum NovaDiagnostics {
             return "[redacted credential-related diagnostic]"
         }
         let patterns = [
-            #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}"#,
-            #"\\beyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\b"#,
+            #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
+            #"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\b"#,
             #"[A-Za-z0-9_+/-]{100,}={0,2}"#
         ]
         return patterns.reduce(flattened) { text, pattern in
