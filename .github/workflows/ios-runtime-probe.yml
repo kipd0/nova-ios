@@ -479,12 +479,9 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client/src/entry.rs crates/horizon-client/src/game/runtime/window_handler.rs
 
-      - name: Bypass main-thread guest stack startup probe on iOS only
-        shell: bash
-        run: |
-          python3 platforms/ios/patches/ios_guest_stack_startup.py
-          git diff --check
-          git diff --stat -- crates/horizon-guest-stack/src/lib.rs
+      # Experiment: keep Horizon's normal 136 MiB main-thread stack guard.
+      # The bypass script remains unchanged in the repository, but is not applied
+      # in this branch's build.
 
       - name: Wait for completed world tables before iOS game handoff
         shell: bash
@@ -559,6 +556,22 @@ jobs:
             NOVA_MSA_CLIENT_ID="${{ vars.HORIZON_MSA_CLIENT_ID }}" build \
             2>&1 | tee ios-app-link.log
           test -d Build/Derived/Build/Products/Release-iphoneos/Nova.app
+      - name: Verify 136 MiB main-stack load command (experimental)
+        if: steps.app_link.outcome == 'success'
+        working-directory: platforms/ios
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 0x8800000 = 142606336 bytes; reject an ignored linker setting.
+          otool -l Build/Derived/Build/Products/Release-iphoneos/Nova.app/Nova |
+            awk '/cmd LC_MAIN/ { main = 1 }
+                 main && $1 == "stacksize" {
+                   print "Linked Nova main-thread " $0
+                   if ($2 != 142606336) exit 1
+                   found = 1
+                   exit
+                 }
+                 END { if (!found) exit 1 }'
       - name: Package unsigned integrated iOS app
         id: ipa
         if: steps.app_link.outcome == 'success'
