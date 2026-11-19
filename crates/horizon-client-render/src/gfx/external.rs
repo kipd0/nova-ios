@@ -181,6 +181,8 @@ pub struct Capabilities {
     pub entities: bool,
     /// Its rays read the scene's entity layer, which the engine then builds.
     pub ray_entities: bool,
+    /// Its rays read the terrain's quad looks in the ray scene, so sections keep them.
+    pub ray_looks: bool,
     /// Its terrain pipelines bind the arenas' quad looks (`looks::wanted`): sections carry them.
     pub looks: bool,
 }
@@ -224,6 +226,8 @@ pub struct FrameStart<'a> {
     pub sky_visible: bool,
     /// The ray scene, when the game traces rays (`ExternalPipeline::start_frame`).
     pub scene: Option<&'a RayScene>,
+    /// This frame's lightmap, RGBA rows of sky level by block level (`Renderer::lightmap_pixels`).
+    pub lightmap: &'a [u8; 16 * 16 * 4],
 }
 
 /// What the renderer hands the pack after the water mirror (`ExternalPipeline::prepare_world_targets`).
@@ -344,9 +348,11 @@ pub struct EntityLayers<'a> {
 
 /// A section the grid may draw from this frame: its arena page, the base vertex of its solid
 /// draws (`SectionGpu::solid_base`: in the compact layout past `PACKED_BASE`), its solid quads
-/// and its camera-relative origin.
+/// and its camera-relative origin, and its page's quad looks while a pack reads them
+/// (`Arena::looks`).
 pub struct Near<'a> {
     pub buffer: &'a wgpu::Buffer,
+    pub looks: Option<&'a wgpu::Buffer>,
     pub base: u32,
     pub quads: u32,
     pub origin: [f32; 3],
