@@ -59,19 +59,39 @@ enum NovaDiagnostics {
         }
     }
 
-    /// Capture native stdout/stderr (including early Rust and renderer errors)
-    /// in the SAME file, without interfering with Horizon's own latest.log.
-    /// Call once, at process startup, before invoking the Rust game.
+    /// Do not mirror unfiltered stdout/stderr into the Files-visible
+    /// Diagnostics folder. Native frameworks and unforeseen failures can print
+    /// credentials even when our own account code never does.
     static func captureConsole() {
-        guard let url = logURL() else { return }
-        let descriptor = url.path.withCString { Darwin.open($0, O_WRONLY | O_APPEND) }
-        guard descriptor >= 0 else { return }
-        let stdoutOK = Darwin.dup2(descriptor, STDOUT_FILENO) >= 0
-        let stderrOK = Darwin.dup2(descriptor, STDERR_FILENO) >= 0
-        if descriptor != STDOUT_FILENO && descriptor != STDERR_FILENO {
-            _ = Darwin.close(descriptor)
+        record("diagnostics.raw-console-capture-disabled; privacy-protection")
+    }
+
+    private static func sanitized(_ message: String) -> String {
+        let flattened = message.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        let lower = flattened.lowercased()
+        let privateMarkers = [
+            "access_token", "refresh_token", "id_token", "device_code",
+            "user_code", "access token", "refresh token", "bearer ",
+            "authorization:", "password", "client_secret", "cookie:",
+            "xbl3.0", "session-file", "session_file", "login.microsoftonline.com",
+            "api.minecraftservices.com/authentication"
+        ]
+        if privateMarkers.contains(where: { lower.contains($0) }) {
+            return "[redacted credential-related diagnostic]"
         }
-        record("diagnostics.console-capture; stdout=\(stdoutOK); stderr=\(stderrOK)")
+        let patterns = [
+            #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
+            #"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\b"#,
+            #"[A-Za-z0-9_+/-]{100,}={0,2}"#
+        ]
+        return patterns.reduce(flattened) { text, pattern in
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                return text
+            }
+            return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                  withTemplate: "[redacted]")
+        }
     }
 
     static func record(_ stage: String) {
@@ -79,9 +99,8 @@ enum NovaDiagnostics {
         defer { lock.unlock() }
         guard let url = logURLLocked() else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
-        let sanitized = stage.replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        let bytes = Array("[\(stamp)] [swift] \(sanitized)\n".utf8)
+        let safeStage = sanitized(stage)
+        let bytes = Array("[\(stamp)] [swift] \(safeStage)\n".utf8)
         // O_APPEND prevents concurrent Rust/Swift writes from seeking to an
         // outdated end-of-file offset and overwriting one another.
         let descriptor = url.path.withCString { Darwin.open($0, O_WRONLY | O_APPEND) }

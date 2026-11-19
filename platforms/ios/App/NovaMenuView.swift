@@ -12,6 +12,8 @@ struct NovaMenuView: View {
     let onLogs: () -> Void
     let onClose: () -> Void
 
+    @StateObject private var accounts = NovaMicrosoftAccount()
+    @State private var showAccounts = false
     @State private var confirmClose = false
     @State private var showDiscord = false
     @State private var showGameFolder = false
@@ -76,6 +78,9 @@ struct NovaMenuView: View {
             .frame(width: width, height: height)
         }
         .ignoresSafeArea()
+        .sheet(isPresented: $showAccounts) {
+            NovaAccountSheet(account: accounts)
+        }
         .sheet(isPresented: $showDiscord) {
             NovaDiscordBrowser()
         }
@@ -102,25 +107,42 @@ struct NovaMenuView: View {
     private func header(width: CGFloat, height: CGFloat) -> some View {
         let headSize = min(height * 0.78, 140)
         return HStack(spacing: max(14, width * 0.035)) {
-            // No account system is installed yet. Use the default Steve head;
-            // account switching and authenticated IGN-based skins come later.
-            AsyncImage(url: URL(string: "https://mc-heads.net/head/MHF_Steve/128")) { image in
-                image.resizable()
-                    .interpolation(.none)
-                    .scaledToFit()
-            } placeholder: {
-                Image(systemName: "person.crop.square.fill")
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(.white.opacity(0.75))
-            }
-            .frame(width: headSize, height: headSize)
-            .accessibilityLabel("Default Steve skin")
+            Button {
+                showAccounts = true
+            } label: {
+                HStack(spacing: max(10, width * 0.015)) {
+                    AsyncImage(url: URL(string: accounts.profile.map {
+                        "https://mc-heads.net/head/\($0.uuid)/128"
+                    } ?? "https://mc-heads.net/head/MHF_Steve/128")) { image in
+                        image.resizable().interpolation(.none).scaledToFit()
+                    } placeholder: {
+                        Image(systemName: "person.crop.square.fill")
+                            .resizable().scaledToFit()
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                    .frame(width: headSize, height: headSize)
 
-            Text("Steve")
-                .font(.system(size: max(24, min(50, height * 0.31)), weight: .regular))
-                .foregroundStyle(.white)
-                .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 5) {
+                            Text(accounts.profile?.name ?? "Steve")
+                                .font(.system(size: max(22, min(46, height * 0.30))))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.65)
+                            Image(systemName: "chevron.down")
+                                .font(.caption.bold())
+                        }
+                        Text("after logging in or switching accounts restart the launcher")
+                            .font(.system(size: max(10, min(13, height * 0.095))))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                            .foregroundStyle(.white.opacity(0.80))
+                    }
+                    .foregroundStyle(.white)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Minecraft account: \(accounts.profile?.name ?? "Steve"). Tap to switch accounts")
+            .frame(maxWidth: width * 0.69, alignment: .leading)
 
             Spacer(minLength: 8)
 
@@ -186,4 +208,97 @@ private struct NovaGameFolderPicker: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+}
+
+/// Only public Minecraft names/UUIDs appear here. Secrets stay in Keychain.
+private struct NovaAccountSheet: View {
+    @ObservedObject var account: NovaMicrosoftAccount
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Current player") {
+                    HStack {
+                        Image(systemName: account.profile == nil ? "person.fill" : "checkmark.shield.fill")
+                        Text(account.profile?.name ?? "Steve (offline)")
+                    }
+                    Button("Use Steve (offline)") { account.signOut() }
+                        .disabled(account.profile == nil)
+                }
+                if !account.accounts.isEmpty {
+                    Section("Saved Minecraft accounts") {
+                        ForEach(account.accounts) { saved in
+                            HStack {
+                                Button {
+                                    account.select(saved)
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: account.profile?.uuid == saved.uuid
+                                              ? "checkmark.circle.fill" : "circle")
+                                        Text(saved.name)
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                Button(role: .destructive) {
+                                    Task { await account.remove(saved) }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .accessibilityLabel("Remove \(saved.name)")
+                            }
+                        }
+                    }
+                }
+                Section("Microsoft sign-in") {
+                    switch account.state {
+                    case .idle:
+                        Button("Add Microsoft account") { account.signIn() }
+                    case let .working(stage):
+                        HStack {
+                            ProgressView()
+                            Text(stage)
+                        }
+                        Button("Cancel sign-in") { account.cancel() }
+                    case let .code(code, _):
+                        Text("Open Microsoft's sign-in page and enter this one-time code:")
+                        Text(code)
+                            .font(.system(.title2, design: .monospaced).bold())
+                            .textSelection(.enabled)
+                        Button("Copy code") { UIPasteboard.general.string = code }
+                        Button("Open microsoft.com/link") {
+                            UIApplication.shared.open(URL(string: "https://www.microsoft.com/link")!)
+                        }
+                        Button("Cancel sign-in") { account.cancel() }
+                    case let .failed(message):
+                        Text(message).foregroundStyle(.red)
+                        Button("Try signing in again") { account.signIn() }
+                    }
+                    if NovaMicrosoftAccount.clientID == nil {
+                        Text("Microsoft sign-in is not configured in this build. The distributor must provide an approved application ID.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    if let bootIssue = UserDefaults.standard.string(forKey: NovaAccountBoot.issueKey) {
+                        Text(bootIssue).foregroundStyle(.orange)
+                    }
+                    Text("after logging in or switching accounts restart the launcher")
+                        .font(.footnote)
+                    Text("Microsoft handles your password in its own browser. Nova stores Minecraft credentials only in iOS Keychain, not in exported game files or diagnostics.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Minecraft accounts")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
 }

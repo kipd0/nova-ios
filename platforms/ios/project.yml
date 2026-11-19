@@ -21,6 +21,7 @@ targets:
         CFBundleDisplayName: Nova
         NovaBuildCommit: $(NOVA_GIT_COMMIT)
         NovaBuildRun: $(NOVA_GIT_RUN)
+        HorizonMSAClientID: $(NOVA_MSA_CLIENT_ID)
         LSRequiresIPhoneOS: true
         UIRequiresFullScreen: true
         UIFileSharingEnabled: true
@@ -43,6 +44,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         NOVA_GIT_COMMIT: local
         NOVA_GIT_RUN: local
+        NOVA_MSA_CLIENT_ID: ""
         SWIFT_OBJC_BRIDGING_HEADER: RustBridge/include/HorizonBridge.h
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
