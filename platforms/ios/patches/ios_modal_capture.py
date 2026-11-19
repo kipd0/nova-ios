@@ -181,9 +181,12 @@ change(capture,
 change(capture,
        "        let active = self.focused || self.agent_pointer;",
        '        let active = self.focused || self.agent_pointer || cfg!(target_os = "ios");')
+# New upstream Horizon consolidates pointer eligibility in grab_refused(Grab).
+# Keep title-screen/prompt safeguards intact while allowing UIKit's software
+# pointer capture without relying on desktop focus notifications.
 change(capture,
-       'if capture\n            && ((!self.focused && !self.unclaimed_window && !self.scripted_run())',
-       'if capture\n            && ((!self.focused && !self.unclaimed_window && !self.scripted_run() && !cfg!(target_os = "ios"))')
+       '            game_focused: self.focused,\n            window_focused,',
+       '            game_focused: self.focused || cfg!(target_os = "ios"),\n            window_focused: window_focused || cfg!(target_os = "ios"),')
 
 # iOS does not grab a desktop pointer: its first virtual click is an
 # actual attack/use action rather than a focus-acquiring mouse click.
