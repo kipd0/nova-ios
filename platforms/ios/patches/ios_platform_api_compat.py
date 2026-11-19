@@ -71,4 +71,14 @@ replace_once(
     "    std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);",
 )
 
-print("Nova iOS: desktop-only holder and modifier APIs guarded for iOS")
+# Only desktop builds provide the process-holder used by lease_units.
+# Keep Horizon's committed sources intact; hide this desktop-only function
+# from the iOS compiler alongside the holder module it depends on.
+replace_once(
+    "crates/horizon-mod-package/src/runtime_leases.rs",
+    "pub fn lease_units(",
+    '#[cfg(any(target_os = "linux", target_os = "macos", windows))]\n'
+    "pub fn lease_units(",
+)
+
+print("Nova iOS: desktop-only holder, lease, and modifier APIs guarded for iOS")
