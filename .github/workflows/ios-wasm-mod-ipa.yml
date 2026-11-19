@@ -1,0 +1,103 @@
+name: Nova IPA - WebAssembly mod support
+
+# Run manually from Actions. The existing iOS build runs once on macOS.
+# A Linux job then adds the host-independent shared WebAssembly std member
+# to the unsigned IPA without changing Horizon/gameplay source files.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner for the Nova IPA build
+        type: choice
+        required: true
+        default: macos-26-intel
+        options:
+          - macos-26-intel
+          - macos-26
+          - macos-15-intel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-wasm-mod-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios-ipa:
+    # Reuse the existing iOS integration and keep it the single source of truth.
+    uses: ./.github/workflows/ios-runtime-probe.yml
+    with:
+      runner: ${{ inputs.runner }}
+
+  attach-wasm-std:
+    needs: build-ios-ipa
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exactly the IPA build's source revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read Horizon's pinned Rust toolchain
+        id: rust
+        shell: bash
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust and wasm build dependencies
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rust-src
+          targets: wasm32-unknown-unknown
+
+      - name: Build the shared WebAssembly standard-library member
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wasm-std
+          cargo run --locked -p cargo-horizon-mod -- wasm-std wasm-std/horizon-wasm-std.wasm
+          python3 - <<'PY'
+          from pathlib import Path
+          file = Path("wasm-std/horizon-wasm-std.wasm")
+          assert file.stat().st_size > 8, "Shared wasm std member is missing or empty"
+          assert file.open("rb").read(4) == b"\0asm", "Shared std member is not WebAssembly"
+          print(f"Built {file} ({file.stat().st_size} bytes)")
+          PY
+
+      - name: Download the unsigned Nova IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: nova
+          path: downloaded
+
+      - name: Add wasm std beside the Nova executable and verify IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s downloaded/nova.ipa
+          mkdir -p patched
+          unzip -q downloaded/nova.ipa -d patched
+          test -f patched/Payload/Nova.app/Nova
+          cp wasm-std/horizon-wasm-std.wasm patched/Payload/Nova.app/horizon-wasm-std.wasm
+          (
+            cd patched
+            zip -qry ../nova-wasm.ipa Payload
+          )
+          unzip -tq nova-wasm.ipa
+          unzip -p nova-wasm.ipa Payload/Nova.app/horizon-wasm-std.wasm |
+            cmp - wasm-std/horizon-wasm-std.wasm
+          if unzip -Z1 nova-wasm.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
+            echo "::error::Game assets must not be bundled in Nova"
+            exit 1
+          fi
+          echo "Nova IPA contains the shared WebAssembly std member"
+
+      - name: Upload Nova IPA with WebAssembly mod support
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-wasm
+          path: nova-wasm.ipa
+          if-no-files-found: error
+          retention-days: 7
