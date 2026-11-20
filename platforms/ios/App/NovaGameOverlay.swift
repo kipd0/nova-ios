@@ -32,6 +32,38 @@ private final class NovaOverlayButton: UIButton {
     required init?(coder: NSCoder) { fatalError("Use init(control:)") }
 }
 
+/// UITextField's secure content canvas is omitted from iOS screen capture on
+/// supported versions. Keep touch handling on the real buttons: the field
+/// forwards hits to them rather than accepting taps itself or opening a keyboard.
+/// This is an iOS implementation detail, so failure falls back to normal controls.
+private final class NovaRecordingProtectedField: UITextField {
+    private var touchTargets: [UIView] = []
+
+    override var canBecomeFirstResponder: Bool { false }
+
+    func setTouchTargets(_ views: [UIView]) {
+        touchTargets = views
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        touchTargets.contains { view in
+            !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled &&
+                view.point(inside: view.convert(point, from: self), with: event)
+        }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, alpha > 0.01, isUserInteractionEnabled else { return nil }
+        for view in touchTargets.reversed()
+        where !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled {
+            if let target = view.hitTest(view.convert(point, from: self), with: event) {
+                return target
+            }
+        }
+        return nil
+    }
+}
+
 /// The game still owns UIApplicationMain, Metal, the window and its event loop.
 /// Nova only adds UIKit controls and SwiftUI sheets to that existing window.
 final class NovaGameOverlay: NSObject, UITextFieldDelegate {
@@ -42,6 +74,17 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private var panelController: UIViewController?
     private var activeControls: [(view: UIView, control: NovaTouchControl)] = []
     private let mouseSurface = NovaMouseSurface(frame: .zero)
+    private let recordingField: NovaRecordingProtectedField = {
+        let field = NovaRecordingProtectedField(frame: .zero)
+        field.isSecureTextEntry = true
+        field.text = " "
+        field.textColor = .clear
+        field.tintColor = .clear
+        field.backgroundColor = .clear
+        field.borderStyle = .none
+        field.clipsToBounds = false
+        return field
+    }()
     private let cursorView: UIImageView = {
         // This is the actual supplied black/white PNG, not a system symbol.
         let url = Bundle.main.url(forResource: "NovaPointer", withExtension: "png")
@@ -108,6 +151,12 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         }
         overlay.addSubview(mouseSurface)
 
+        // A separate secure canvas contains only touch-control visuals.
+        // Metal gameplay, the cursor, and SwiftUI menus remain recordable.
+        recordingField.frame = overlay.bounds
+        recordingField.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.addSubview(recordingField)
+
         textField.alpha = 0.02
         textField.autocapitalizationType = .none
         textField.autocorrectionType = .no
@@ -172,21 +221,44 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
             overlay.addSubview(button)
             activeControls.append((button, control))
         }
+        configureRecordingProtection()
         layoutButtons()
         refreshTouchGestures()
+    }
+
+    private func configureRecordingProtection() {
+        let enabled = UserDefaults.standard.bool(forKey: "nova.touch.hideButtonsFromRecording")
+        recordingField.layoutIfNeeded()
+        // Secure-text content is deliberately obtained via UIKit's view tree;
+        // do not alter the game window's layers or protect the entire game.
+        let canvas = enabled ? recordingField.subviews.first : nil
+        let parent = canvas ?? overlay
+        for item in activeControls {
+            parent.addSubview(item.view)
+        }
+        recordingField.setTouchTargets(canvas == nil ? [] : activeControls.map { $0.view })
+        if enabled && canvas == nil {
+            NovaDiagnostics.record("overlay.capture-buttons.unavailable; using-visible-controls")
+        }
     }
 
     private func layoutButtons() {
         let bounds = overlay.bounds
         guard bounds.width > 10, bounds.height > 10 else { return }
+        if recordingField.frame != bounds {
+            recordingField.frame = bounds
+        }
+        recordingField.layoutIfNeeded()
         for (view, control) in activeControls {
             let width = control.kind == "joystick"
                 ? max(110, CGFloat(control.buttonWidth)) : CGFloat(control.buttonWidth)
             let height = control.kind == "joystick"
                 ? max(110, CGFloat(control.buttonHeight)) : CGFloat(control.buttonHeight)
             view.bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            view.center = CGPoint(x: bounds.width * control.x,
-                                  y: bounds.height * control.y)
+            let screenPoint = CGPoint(x: bounds.width * control.x,
+                                      y: bounds.height * control.y)
+            view.center = view.superview.map { overlay.convert(screenPoint, to: $0) }
+                ?? screenPoint
         }
         if cursorPoint == nil {
             cursorPoint = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -447,6 +519,8 @@ private struct NovaTouchSettingsView: View {
         ? 1.0 : UserDefaults.standard.double(forKey: "nova.mouse.sensitivity")
     @State private var touchGestures =
         UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
+    @State private var hideButtonsFromRecording =
+        UserDefaults.standard.bool(forKey: "nova.touch.hideButtonsFromRecording")
 
     var body: some View {
         NavigationStack {
@@ -461,6 +535,10 @@ private struct NovaTouchSettingsView: View {
                     Toggle("Touch gestures", isOn: $touchGestures)
                     Text("Disable to ignore direct screen taps and swipes in Horizon. Touch buttons remain available.")
                         .font(.footnote)
+                    Toggle("Hide touch screen buttons from screen recording",
+                           isOn: $hideButtonsFromRecording)
+                    Text("Buttons remain visible and usable while playing, but are excluded from screen recordings and screenshots on supported iOS versions.")
+                        .font(.footnote)
                 }
                 Section("Layouts") {
                     Text("JSON layouts are in Files → On My iPad → Nova → TouchLayouts.")
@@ -474,6 +552,8 @@ private struct NovaTouchSettingsView: View {
                         UserDefaults.standard.set(mouseScale, forKey: "nova.mouse.scale")
                         UserDefaults.standard.set(sensitivity, forKey: "nova.mouse.sensitivity")
                         UserDefaults.standard.set(touchGestures, forKey: "nova.touch.gestures")
+                        UserDefaults.standard.set(hideButtonsFromRecording,
+                                                  forKey: "nova.touch.hideButtonsFromRecording")
                         nova_ios_set_touch_gestures(touchGestures)
                         onDone()
                     }
