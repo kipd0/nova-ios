@@ -490,13 +490,6 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs
 
-      - name: Limit iOS resource loader threads to avoid EAGAIN
-        shell: bash
-        run: |
-          python3 platforms/ios/patches/ios_resource_thread_budget.py
-          git diff --check
-          git diff --stat -- crates/horizon-client/src/game/runtime/resource_load.rs
-
       - name: Install iOS frame and startup watchdog diagnostics
         shell: bash
         run: |
