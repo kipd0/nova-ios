@@ -32,17 +32,69 @@ private final class NovaOverlayButton: UIButton {
     required init?(coder: NSCoder) { fatalError("Use init(control:)") }
 }
 
-/// UITextField's secure content canvas is omitted from iOS screen capture on
-/// supported versions. Keep touch handling on the real buttons: the field
-/// forwards hits to them rather than accepting taps itself or opening a keyboard.
-/// This is an iOS implementation detail, so failure falls back to normal controls.
-private final class NovaRecordingProtectedField: UITextField {
+/// Hosts only Nova's visible touch controls inside UIKit's secure canvas.
+/// Unlike the old implementation, this identifies the actual text-layout canvas
+/// rather than taking the first (possibly unprotected) UITextField subview.
+/// The text field stays retained but its secure canvas is moved into our overlay,
+/// so only the buttons/joystick are excluded from screen capture.
+private final class NovaRecordingProtectedView: UIView {
+    private let secureField = UITextField(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+    private(set) var secureCanvas: UIView?
     private var touchTargets: [UIView] = []
 
-    override var canBecomeFirstResponder: Bool { false }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
 
-    func setTouchTargets(_ views: [UIView]) {
+        secureField.backgroundColor = .clear
+        secureField.isUserInteractionEnabled = false
+        secureField.isSecureTextEntry = true
+        secureField.text = " "
+        secureField.layoutIfNeeded()
+
+        // Apple's internal class name has varied by iOS version. Never use
+        // subviews.first: on newer systems that can be an ordinary wrapper.
+        let canvas = secureField.subviews.first(where: {
+            let name = String(describing: type(of: $0))
+            return name.contains("TextLayoutCanvasView") ||
+                   name.contains("TextFieldCanvasView")
+        })
+        guard let canvas else {
+            let types = secureField.subviews
+                .map { String(describing: type(of: $0)) }
+                .joined(separator: ",")
+            NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-missing; children=\\(types)")
+            return
+        }
+
+        // This view has the actual capture-excluded Core Animation layer.
+        // Keep the UITextField retained for the lifetime of the canvas.
+        canvas.removeFromSuperview()
+        canvas.backgroundColor = .clear
+        canvas.isUserInteractionEnabled = true
+        canvas.clipsToBounds = false
+        canvas.frame = bounds
+        canvas.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(canvas)
+        secureCanvas = canvas
+        NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-found")
+    }
+
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    func host(_ views: [UIView]) -> Bool {
+        guard let canvas = secureCanvas else {
+            touchTargets = []
+            return false
+        }
+        for view in views { canvas.addSubview(view) }
         touchTargets = views
+        return true
+    }
+
+    func clearTargets() {
+        touchTargets = []
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
@@ -56,8 +108,8 @@ private final class NovaRecordingProtectedField: UITextField {
         guard !isHidden, alpha > 0.01, isUserInteractionEnabled else { return nil }
         for view in touchTargets.reversed()
         where !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled {
-            if let target = view.hitTest(view.convert(point, from: self), with: event) {
-                return target
+            if let hit = view.hitTest(view.convert(point, from: self), with: event) {
+                return hit
             }
         }
         return nil
@@ -74,17 +126,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     private var panelController: UIViewController?
     private var activeControls: [(view: UIView, control: NovaTouchControl)] = []
     private let mouseSurface = NovaMouseSurface(frame: .zero)
-    private let recordingField: NovaRecordingProtectedField = {
-        let field = NovaRecordingProtectedField(frame: .zero)
-        field.isSecureTextEntry = true
-        field.text = " "
-        field.textColor = .clear
-        field.tintColor = .clear
-        field.backgroundColor = .clear
-        field.borderStyle = .none
-        field.clipsToBounds = false
-        return field
-    }()
+    private let recordingProtection = NovaRecordingProtectedView(frame: .zero)
     private let cursorView: UIImageView = {
         // This is the actual supplied black/white PNG, not a system symbol.
         let url = Bundle.main.url(forResource: "NovaPointer", withExtension: "png")
@@ -153,9 +195,9 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
 
         // A separate secure canvas contains only touch-control visuals.
         // Metal gameplay, the cursor, and SwiftUI menus remain recordable.
-        recordingField.frame = overlay.bounds
-        recordingField.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        overlay.addSubview(recordingField)
+        recordingProtection.frame = overlay.bounds
+        recordingProtection.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.addSubview(recordingProtection)
 
         textField.alpha = 0.02
         textField.autocapitalizationType = .none
@@ -182,6 +224,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     }
 
     private func applyLayout() {
+        recordingProtection.clearTargets()
         activeControls.forEach { $0.view.removeFromSuperview() }
         activeControls.removeAll()
         layout = NovaTouchLayouts.current()
@@ -228,27 +271,26 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
 
     private func configureRecordingProtection() {
         let enabled = UserDefaults.standard.bool(forKey: "nova.touch.hideButtonsFromRecording")
-        recordingField.layoutIfNeeded()
-        // Secure-text content is deliberately obtained via UIKit's view tree;
-        // do not alter the game window's layers or protect the entire game.
-        let canvas = enabled ? recordingField.subviews.first : nil
-        let parent = canvas ?? overlay
-        for item in activeControls {
-            parent.addSubview(item.view)
-        }
-        recordingField.setTouchTargets(canvas == nil ? [] : activeControls.map { $0.view })
-        if enabled && canvas == nil {
-            NovaDiagnostics.record("overlay.capture-buttons.unavailable; using-visible-controls")
+        let views = activeControls.map { $0.view }
+        if enabled && recordingProtection.host(views) {
+            NovaDiagnostics.record("overlay.capture-buttons.enabled; protected=\\(views.count)")
+        } else {
+            recordingProtection.clearTargets()
+            for view in views { overlay.addSubview(view) }
+            if enabled {
+                NovaDiagnostics.record("overlay.capture-buttons.unavailable; using-visible-controls")
+            } else {
+                NovaDiagnostics.record("overlay.capture-buttons.disabled")
+            }
         }
     }
 
     private func layoutButtons() {
         let bounds = overlay.bounds
         guard bounds.width > 10, bounds.height > 10 else { return }
-        if recordingField.frame != bounds {
-            recordingField.frame = bounds
+        if recordingProtection.frame != bounds {
+            recordingProtection.frame = bounds
         }
-        recordingField.layoutIfNeeded()
         for (view, control) in activeControls {
             let width = control.kind == "joystick"
                 ? max(110, CGFloat(control.buttonWidth)) : CGFloat(control.buttonWidth)
