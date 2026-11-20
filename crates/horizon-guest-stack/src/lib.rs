@@ -132,7 +132,7 @@ fn inspect_current() -> Result<(), &'static str> {
             let result = libc::pthread_attr_getstacksize(&attr, &mut size);
             libc::pthread_attr_destroy(&mut attr);
             if result != 0 || size < GUEST_STACK_BYTES + HOST_HEADROOM {
-                return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
+                return Err("GuestStackUnavailable: calling thread stack is below the guest reservation");
             }
         }
     }
@@ -141,7 +141,7 @@ fn inspect_current() -> Result<(), &'static str> {
         // SAFETY: pthread_self names the live calling thread.
         let size = unsafe { libc::pthread_get_stacksize_np(libc::pthread_self()) };
         if size < GUEST_STACK_BYTES + HOST_HEADROOM {
-            return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
+            return Err("GuestStackUnavailable: calling thread stack is below the guest reservation");
         }
     }
     #[cfg(windows)]
@@ -151,7 +151,7 @@ fn inspect_current() -> Result<(), &'static str> {
         // SAFETY: both pointers refer to writable stack bounds.
         unsafe { get_current_thread_stack_limits(&mut low, &mut high) };
         if high - low < GUEST_STACK_BYTES + HOST_HEADROOM {
-            return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
+            return Err("GuestStackUnavailable: calling thread stack is below the guest reservation");
         }
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]

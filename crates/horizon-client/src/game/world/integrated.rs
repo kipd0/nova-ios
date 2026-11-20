@@ -1633,7 +1633,7 @@ pub(super) mod tests {
     /// reaches it (arismoko/horizon#2430).
     #[test]
     fn the_server_thread_stack_keeps_guest_headroom_and_larger_overrides() {
-        let minimum = 136 * 1024 * 1024;
+        let minimum = super::SERVER_THREAD_STACK;
         assert_eq!(super::stack_for(None), minimum);
         assert_eq!(
             super::stack_for(Some("1048576")),
