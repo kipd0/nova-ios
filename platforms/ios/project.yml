@@ -50,8 +50,10 @@ targets:
           - $(inherited)
           - $(PROJECT_DIR)/Build/rust
         HORIZON_IOS_RUST_LIB: horizon_ios_bridge
+        # Experimental iOS main-thread stack reservation: 128 MiB guest + 8 MiB host.
         OTHER_LDFLAGS:
           - $(inherited)
+          - -Wl,-stack_size,0x8800000
           - -l$(HORIZON_IOS_RUST_LIB)
           - -framework
           - AudioToolbox
