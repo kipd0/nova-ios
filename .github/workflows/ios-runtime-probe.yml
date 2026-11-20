@@ -497,6 +497,13 @@ jobs:
           git diff --check
           git diff --stat -- crates/horizon-client/src/game/runtime/loading_screen.rs crates/horizon-client/src/game/runtime/resource_load.rs
 
+      - name: Enable Pulley interpreter for iOS WebAssembly mods
+        shell: bash
+        run: |
+          python3 platforms/ios/patches/ios_wasm_pulley.py
+          git diff --check
+          git diff --stat -- crates/horizon-mod-wasm/src/runtime.rs crates/horizon-mod-wasm/src/module_cache.rs
+
       - name: Trace desktop Wayland dependency on iOS
         shell: bash
         run: |
