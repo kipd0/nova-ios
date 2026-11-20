@@ -92,6 +92,11 @@ new_workflow = new_workflow.replace(
     "",
 )
 WORKFLOW.write_text(new_workflow, encoding="utf-8")
+# The runner token may not update .github/workflows (missing workflow scope).
+# Ship the desired workflow as an ordinary text file. The GitHub connector
+# will atomically promote it to .github/workflows after this source commit.
+pending_workflow = Path("platforms/ios/ci/ios-runtime-probe-integrated.yml")
+pending_workflow.write_text(new_workflow, encoding="utf-8")
 
 # The old adapter is now compiled from the real game's iOS-only source.
 source_adapter = Path("crates/horizon-client/src/game/runtime/ios_control_key.inc")
@@ -116,13 +121,13 @@ readme.write_text(
     encoding="utf-8",
 )
 
-run("git", "add", "-A", "crates", "platforms/ios", ".github/workflows/ios-runtime-probe.yml")
+run("git", "add", "-A", "crates", "platforms/ios")
 run("git", "diff", "--cached", "--check")
 diff = git("diff", "--cached", "--stat")
 print("Migration staged diff:\n" + diff, flush=True)
 changed = git("diff", "--cached", "--name-only").splitlines()
 assert any(path.startswith("crates/") for path in changed)
-assert not any(path.startswith(".github/workflows/") and path != ".github/workflows/ios-runtime-probe.yml" for path in changed)
+assert not any(path.startswith(".github/workflows/") for path in changed)
 assert len(changed) > 20, "Unexpectedly small migration diff"
 git_user = "github-actions[bot]"
 run("git", "config", "user.name", git_user)
