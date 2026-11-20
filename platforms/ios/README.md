@@ -1,17 +1,21 @@
-# Nova — Horizon iOS host (scaffold)
+# Nova — Horizon iOS host
 
-This directory is an additive iOS/iPadOS host for the ORIGINAL Horizon game.
-It does not port the desktop launcher and does not modify gameplay crates.
+This directory provides Nova's iOS/iPadOS host for Horizon. On the
+`test-touch-screen` branch, the iOS runtime changes are tracked in Rust and
+Cargo sources instead of injected into Horizon at build time. Gameplay
+behavior is intended to match upstream, but its tracked engine files are no
+longer byte-for-byte identical to upstream.
 
 ## Current status
 
-- SwiftUI launch screen, including a disabled Play button until the game is wired in.
-- Metal-backed MTKView wrapper available for the eventual game window.
-- Rust staticlib with a stable C ABI header. Its game functions intentionally
-  return *not ready*; they do NOT launch Horizon yet.
-- GitHub Actions builds the Rust iOS bridge, compiles an unsigned iOS app, and
-  packages the app as an unsigned IPA artifact for inspection.
-- A signed, installable IPA and a running Horizon game are NOT yet available.
+- The integrated iOS runtime can launch Horizon on a device with user-provided
+  prepared resources; menus and gameplay have been tested during development.
+- The Swift launcher/overlay supplies touch controls and account setup.
+- A Rust static library links the actual Horizon game; the lightweight
+  standalone `RustBridge` remains a scaffold for launcher-only builds.
+- GitHub Actions builds an unsigned IPA; signing/sideloading is separate.
+- The `test-touch-screen` source migration still requires a fresh IPA build and
+  on-device testing, especially for mod keybinds.
 
 ## Build on a Mac
 
@@ -39,15 +43,11 @@ identity and provisioning appropriate to the target device.
 
 ## Next engineering tasks
 
-1. Attempt a locked aarch64-apple-ios build of the original Horizon client
-   and audit errors without changing gameplay files.
-2. Establish an iOS-safe entry point and event-loop ownership; the current
-   upstream entry::main() isn't automatically an iOS app lifecycle.
-3. Connect the existing wgpu renderer to an iOS Metal-backed surface.
-4. Wire host lifecycle, assets, sandbox paths, and original keyboard/mouse
-   events. Implement touchscreen mapping after the game runs.
-5. Replace the explicitly disabled bridge launch entry point only when actual
-   in-process gameplay startup has been tested.
+1. Rebuild the integrated IPA from `test-touch-screen` without CI patch steps.
+2. Verify touch keyboard/mouse events in gameplay, menus and mod keybindings.
+3. Check login, audio, resource loading, Metal rendering and app relaunches.
+4. Keep iOS-specific code isolated and review merge conflicts with upstream
+   Horizon before accepting later engine updates.
 
 See root PLAN.txt for architectural constraints and upstream update policy.
 
@@ -114,17 +114,13 @@ this mode. Game-linked builds use a private resources path from
 `Application Support/Nova/Resources` and game home from
 `Application Support/Nova/Game`.
 
-Only the CI checkout of `crates/horizon-client/src/game/launch_options.rs`
-is patched to allow the iOS resource root to be provided through the private
-`NOVA_IOS_RESOURCES` environment variable. No upstream gameplay source is
-committed or permanently changed.
+The tracked `crates/horizon-client/src/game/runtime/launch_options.rs`
+contains the iOS resource-root handling through the private
+`NOVA_IOS_RESOURCES` environment variable. This is no longer a runner-only patch.
 
-**Status:** Startup compiles only until device verification. Winit lifecycle,
-Metal menu rendering, iOS audio, sandbox filesystem, backgrounding and input
-may still fail. This is NOT a playable or device-verified build. The regular
-Nova launcher still works, but there is no hot-switch back to it during a
-winit-owned session. A later version should support a clean single-lifecycle
-launcher-to-game handoff without relaunching.
+**Status:** The integrated runtime has launched on an iPad in earlier builds,
+although crashes and input compatibility issues remain under investigation.
+The newly tracked-source version has not yet been compiled and tested on-device.
 
 ## Exportable black-screen diagnostics
 
@@ -136,11 +132,9 @@ Only choosing Export Logs opens the system share sheet; there is no telemetry
 upload. Don't share logs publicly without checking their contents.
 
 The cold-start Swift entry records which branch was chosen; the full Rust
-bridge writes stages before it enters the original Horizon startup. The
-GitHub Actions runner injects small **iOS-only, diagnostic-only** temporary
-breadcrumbs into the existing Horizon loading/window code to record winit
-lifecycle creation, window creation, renderer init and the first frame.
-No original Horizon gameplay sources are modified in git.
+bridge writes stages before it enters the original Horizon startup. The iOS integration and diagnostic checkpoints are now tracked in source,
+including Horizon's loading/window code. The build workflow no longer injects
+these changes from Python scripts.
 
 To capture a black screen, start an experiment, fully close and reopen Nova
 to run it, then force-close Nova and reopen normally. The one-shot startup
@@ -151,6 +145,10 @@ Metal failure.
 
 ### Tracked iOS integration (test-touch-screen)
 
-The CI-time Python source patches were migrated into tracked Rust and Cargo source files. The iOS build now compiles those changes directly; no patch scripts are applied during the build. iOS-specific paths are guarded with target_os where practical.
+The active CI-time Python source patches were migrated into tracked Rust and
+Cargo files. The iOS build now compiles those changes directly; no patch scripts
+are applied during the build. iOS-specific paths are guarded with
+`target_os = "ios"` where practical.
 
-The older 136 MiB main-thread stack-probe bypass was disabled in the original workflow and was deliberately not enabled during migration.
+The older 136 MiB main-thread stack-probe bypass was disabled in the original
+workflow and was deliberately not enabled during migration.
