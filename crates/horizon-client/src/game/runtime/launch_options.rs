@@ -185,7 +185,12 @@ impl Options {
             .ok_or("missing executable directory")?
             .join("resources");
         let mut o = Self {
-            resources: if sibling.join("horizon-resources.json").exists() {
+            resources: if cfg!(target_os = "ios") {
+      std::env::var_os("NOVA_IOS_RESOURCES")
+          .map(PathBuf::from)
+          .filter(|root| root.join("horizon-resources.json").is_file())
+          .ok_or("Nova: prepared resources not found in the app container")?
+  } else if sibling.join("horizon-resources.json").exists() {
                 sibling
             } else {
                 std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)

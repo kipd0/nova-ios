@@ -933,7 +933,7 @@ impl Loading {
     /// resources load, as `Game::key_focus_key` does it in the game (the
     /// pointer sits on the focus; a step past a list's visible rows doesn't
     /// scroll it here). Whether the key was used.
-    fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
+    pub(super) fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
         // This safety prompt owns its default and spatial navigation in Title.
         if !self.menu.options_open
             && self

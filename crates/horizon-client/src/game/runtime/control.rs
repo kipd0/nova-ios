@@ -2043,3 +2043,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(target_os = "ios")]
+include!("ios_control_key.inc");

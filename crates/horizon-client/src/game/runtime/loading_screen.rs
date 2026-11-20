@@ -19,6 +19,15 @@ pub(super) fn leave_fullscreen_after(
     }
 }
 
+pub(super) fn nova_diag(stage: &str) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(f, "[engine] {stage}");
+        }
+    }
+}
+
 pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     if game.options.headless {
         // No display to open winit's loop on: the game's own loop.
@@ -91,6 +100,7 @@ impl Loading {
             || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
     }
     pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        nova_diag("winit.resumed");
         if self.window.is_some() {
             return;
         }
@@ -105,6 +115,17 @@ impl Loading {
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
         let attributes =
             horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
+        #[cfg(target_os = "ios")]
+        let attributes = {
+            use winit::platform::ios::{
+                ScreenEdge, ValidOrientations, WindowAttributesExtIOS,
+            };
+            attributes
+                .with_prefers_status_bar_hidden(true)
+                .with_prefers_home_indicator_hidden(true)
+                .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
+                .with_valid_orientations(ValidOrientations::Landscape)
+        };
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -112,20 +133,36 @@ impl Loading {
         );
         // `--offscreen` renders into a texture: its window would only show white.
         let window_step = startup::step("window.create");
-        let window = match event_loop.create_window(
-            attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
-                .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
-                .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen)),
-        ) {
+        nova_diag("window.create.begin");
+        // UIKit owns the iOS window bounds: desktop --window-size creates a
+        // 16:9 Metal surface on a 4:3 iPad and can crop the title/buttons.
+        #[cfg(target_os = "ios")]
+        let attributes = attributes
+            .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen));
+        #[cfg(not(target_os = "ios"))]
+        let attributes = attributes
+            .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
+            .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
+            .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen));
+        let window = match event_loop.create_window(attributes) {
             Ok(w) => Arc::new(w),
             Err(e) => {
+                nova_diag(&format!("window.create.failed: {e}"));
                 self.error = Some(e.into());
                 event_loop.exit();
                 return;
             }
         };
+        nova_diag("window.create.succeeded");
+        #[cfg(not(target_os = "ios"))]
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
+        #[cfg(target_os = "ios")]
+        nova_diag(&format!(
+            "ios.window.bounds; physical={}x{}; scale={}",
+            window.inner_size().width,
+            window.inner_size().height,
+            window.scale_factor()
+        ));
         #[cfg(target_os = "windows")]
         if let Some(hwnd) = hwnd(&window) {
             horizon_threads::system_menu::suppress(hwnd);
@@ -158,6 +195,7 @@ impl Loading {
             });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         let boot_step = startup::step("renderer.boot");
+        nova_diag("renderer.boot.begin");
         match loading_renderer(
             window.clone(),
             offscreen,
@@ -167,12 +205,16 @@ impl Loading {
             self.settings.horizon.api,
             shader_packs::picked_pack_shape(&self.settings).ray_tracing,
         ) {
-            Ok(r) => self.renderer = Some(r),
+            Ok(r) => {
+                nova_diag("renderer.boot.succeeded");
+                self.renderer = Some(r)
+            },
             Err(e) => {
                 #[cfg(target_os = "windows")]
                 if let Some(stop) = &boot_paint_stop {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                nova_diag(&format!("renderer.boot.failed: {e}"));
                 self.error = Some(e);
                 event_loop.exit();
                 return;
@@ -206,6 +248,7 @@ impl Loading {
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
     /// and title panorama.
     pub(super) fn set_ui(&mut self, gui: UiResources, root: PathBuf) {
+        nova_diag("resources.menu-received");
         log::info!(
             "Horizon: loading the title artwork after {} ms",
             self.started.elapsed().as_millis()
@@ -246,7 +289,10 @@ impl Loading {
                     gui.atlas.pack_pixels();
                 }
             }
-            Err(e) => self.error = Some(e),
+            Err(e) => {
+                nova_diag(&format!("renderer.menu.failed: {e}"));
+                self.error = Some(e)
+            },
         }
         // The title frame's wait starts once its renderer is built.
         self.ui_at = Some(Instant::now());
@@ -297,13 +343,21 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             match renderer.render(&frame) {
                 Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                    #[cfg(target_os = "ios")]
+                    NOVA_IOS_LOADING_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if !self.title_drawn { nova_diag("renderer.title.frame-presented"); }
                     self.title_drawn = true;
+                }
+                Ok(true) => {
+                    #[cfg(target_os = "ios")]
+                    NOVA_IOS_LOADING_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(_) => {}
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }
         if !self.shown {
+            nova_diag("renderer.first-frame-attempted");
             self.shown = true;
             startup::mark("loading_screen.shown");
             log::info!(
@@ -313,6 +367,18 @@ impl Loading {
         }
     }
     pub(super) fn finish(&mut self, mut loaded: Loaded) -> Result<Option<split::Split<'static>>> {
+        // iOS: the initial world-rest worker must publish its tables before
+        // Game setup reads them. The loading loop waited for completion below,
+        // so joining here should not block the UIKit event loop.
+        #[cfg(target_os = "ios")]
+        if let Some(loader) = loaded.rest_loader.take() {
+            #[cfg(target_os = "ios")]
+            NOVA_IOS_PHASE.store(1, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[nova-watchdog] handoff.join.begin");
+            loader.finish()?;
+            eprintln!("[nova-watchdog] handoff.join.done");
+            eprintln!("Nova iOS: world-rest tables joined before game handoff");
+        }
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -430,25 +496,416 @@ pub(super) enum App {
     Loading(Box<Loading>),
     Ready(Box<split::Split<'static>>),
 }
+// Nova iOS-only adaptation of Kelly-Inc/horizon-ios's stacker::maybe_grow.
+// The iOS main thread is ~1 MiB and renderer initialization overflows it.
+// Unlike std::thread::spawn, this keeps UIKit and Metal on the same OS thread.
+#[inline(never)]
+fn nova_ios_deep<T>(work: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "ios")]
+    {
+        stacker::maybe_grow(1 << 20, 32 << 20, work)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        work()
+    }
+}
+
+
+// Nova iOS diagnostic counters. The independent monitor never calls UIKit,
+// winit, or Metal, and does not wake or change the game's event loop.
+#[cfg(target_os = "ios")]
+static NOVA_IOS_WATCHDOG_ONCE: std::sync::Once = std::sync::Once::new();
+#[cfg(target_os = "ios")]
+static NOVA_IOS_PHASE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static NOVA_IOS_IDLE_BEGIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static NOVA_IOS_IDLE_END: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static NOVA_IOS_REDRAW_BEGIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static NOVA_IOS_REDRAW_END: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static NOVA_IOS_LOADING_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static NOVA_IOS_GAME_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(target_os = "ios")]
+fn nova_ios_start_watchdog(progress: std::sync::Arc<std::sync::atomic::AtomicU32>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    NOVA_IOS_WATCHDOG_ONCE.call_once(|| {
+        let task = move || {
+            let mut previous = [0u64; 6];
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let current = [
+                    NOVA_IOS_IDLE_BEGIN.load(Relaxed),
+                    NOVA_IOS_IDLE_END.load(Relaxed),
+                    NOVA_IOS_REDRAW_BEGIN.load(Relaxed),
+                    NOVA_IOS_REDRAW_END.load(Relaxed),
+                    NOVA_IOS_LOADING_FRAMES.load(Relaxed),
+                    NOVA_IOS_GAME_FRAMES.load(Relaxed),
+                ];
+                eprintln!(
+                    "[nova-watchdog] phase={} progress={}/9 idle={} (+{}) returned={} (+{}) redraw={} (+{}) completed={} (+{}) loading_frames={} (+{}) game_frames={} (+{})",
+                    NOVA_IOS_PHASE.load(Relaxed),
+                    progress.load(Relaxed),
+                    current[0], current[0].saturating_sub(previous[0]),
+                    current[1], current[1].saturating_sub(previous[1]),
+                    current[2], current[2].saturating_sub(previous[2]),
+                    current[3], current[3].saturating_sub(previous[3]),
+                    current[4], current[4].saturating_sub(previous[4]),
+                    current[5], current[5].saturating_sub(previous[5]),
+                );
+                previous = current;
+            }
+        };
+        if let Err(error) = std::thread::Builder::new()
+            .name("nova-ios-watchdog".into())
+            .spawn(task)
+        {
+            eprintln!("[nova-watchdog] could not start: {error}");
+        }
+    });
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "ios")]
+        nova_diag("ios.deep-stack.resumed.begin");
+        #[cfg(target_os = "ios")]
+        if let App::Loading(loading) = self {
+            nova_ios_start_watchdog(loading.progress.value.clone());
+        }
+        nova_ios_deep(|| self.resumed_here(event_loop));
+    }
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        #[cfg(target_os = "ios")]
+        let redraw = matches!(&event, WindowEvent::RedrawRequested);
+        #[cfg(target_os = "ios")]
+        if redraw { NOVA_IOS_REDRAW_BEGIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        nova_ios_deep(|| self.window_event_here(event_loop, id, event));
+        #[cfg(target_os = "ios")]
+        if redraw { NOVA_IOS_REDRAW_END.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    }
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+        nova_ios_deep(|| self.device_event_here(event_loop, id, event));
+    }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "ios")]
+        NOVA_IOS_IDLE_BEGIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        nova_ios_deep(|| self.about_to_wait_here(event_loop));
+        #[cfg(target_os = "ios")]
+        {
+            if let App::Ready(game) = self {
+                NOVA_IOS_GAME_FRAMES.store(game.host.frames as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+            NOVA_IOS_IDLE_END.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+        nova_ios_deep(|| self.exiting_here(event_loop));
+    }
+}
+
+impl App {
+    #[cfg(target_os = "ios")]
+    fn ios_key_code(code: u32) -> Option<KeyCode> {
+        Some(match code {
+            65 => KeyCode::KeyA,
+            66 => KeyCode::KeyB,
+            67 => KeyCode::KeyC,
+            68 => KeyCode::KeyD,
+            69 => KeyCode::KeyE,
+            70 => KeyCode::KeyF,
+            71 => KeyCode::KeyG,
+            72 => KeyCode::KeyH,
+            73 => KeyCode::KeyI,
+            74 => KeyCode::KeyJ,
+            75 => KeyCode::KeyK,
+            76 => KeyCode::KeyL,
+            77 => KeyCode::KeyM,
+            78 => KeyCode::KeyN,
+            79 => KeyCode::KeyO,
+            80 => KeyCode::KeyP,
+            81 => KeyCode::KeyQ,
+            82 => KeyCode::KeyR,
+            83 => KeyCode::KeyS,
+            84 => KeyCode::KeyT,
+            85 => KeyCode::KeyU,
+            86 => KeyCode::KeyV,
+            87 => KeyCode::KeyW,
+            88 => KeyCode::KeyX,
+            89 => KeyCode::KeyY,
+            90 => KeyCode::KeyZ,
+            48 => KeyCode::Digit0,
+            49 => KeyCode::Digit1,
+            50 => KeyCode::Digit2,
+            51 => KeyCode::Digit3,
+            52 => KeyCode::Digit4,
+            53 => KeyCode::Digit5,
+            54 => KeyCode::Digit6,
+            55 => KeyCode::Digit7,
+            56 => KeyCode::Digit8,
+            57 => KeyCode::Digit9,
+            1001 => KeyCode::Space,
+            1002 => KeyCode::ShiftLeft,
+            1003 => KeyCode::ControlLeft,
+            1004 => KeyCode::Escape,
+            1005 => KeyCode::Enter,
+            1006 => KeyCode::Tab,
+            1007 => KeyCode::Backspace,
+            1008 => KeyCode::ArrowUp,
+            1009 => KeyCode::ArrowDown,
+            1010 => KeyCode::ArrowLeft,
+            1011 => KeyCode::ArrowRight,
+            1012 => KeyCode::F1,
+            1013 => KeyCode::F2,
+            1014 => KeyCode::F3,
+            1015 => KeyCode::F5,
+            1016 => KeyCode::F11,
+            1017 => KeyCode::Slash,
+            1018 => KeyCode::F4,
+            1019 => KeyCode::F6,
+            1020 => KeyCode::F7,
+            1021 => KeyCode::F8,
+            1022 => KeyCode::F9,
+            1023 => KeyCode::F10,
+            1024 => KeyCode::F12,
+            1025 => KeyCode::AltLeft,
+            1026 => KeyCode::ShiftRight,
+            1027 => KeyCode::ControlRight,
+            1028 => KeyCode::AltRight,
+            1029 => KeyCode::Comma,
+            1030 => KeyCode::Period,
+            1031 => KeyCode::Minus,
+            1032 => KeyCode::Equal,
+            1033 => KeyCode::Backquote,
+            1034 => KeyCode::BracketLeft,
+            1035 => KeyCode::BracketRight,
+            1036 => KeyCode::Backslash,
+            1037 => KeyCode::Semicolon,
+            1038 => KeyCode::Quote,
+            1039 => KeyCode::CapsLock,
+            _ => return None,
+        })
+    }
+
+    #[cfg(target_os = "ios")]
+    fn ios_drain_inputs(&mut self, event_loop: &ActiveEventLoop) {
+        use horizon_client_input::ios_input::{self, Input};
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        static WAS_MODAL: AtomicBool = AtomicBool::new(false);
+        let modal = ios_input::overlay_active();
+        // Only recenter on the transition from grabbed gameplay back
+        // into a GUI, e.g. opening inventory or pause. Options opened
+        // from the main menu preserves the existing cursor position.
+        let in_world = matches!(self, App::Ready(game)
+            if game.host.screen == Screen::Playing
+                && game.host.title.is_none()
+                && !game.host.screen_over_playing());
+        static WAS_IN_WORLD: AtomicBool = AtomicBool::new(false);
+        let was_in_world = WAS_IN_WORLD.swap(in_world, AtomicOrdering::Relaxed);
+        let changed = was_in_world && !in_world;
+        ios_input::set_playing(in_world);
+        ios_input::publish_pointer_mode(in_world, changed);
+        let was_modal = WAS_MODAL.swap(modal, AtomicOrdering::Relaxed);
+        if modal && !was_modal {
+            if let App::Ready(game) = self {
+                let held: Vec<KeyCode> = game.host.physical_keys.iter().copied().collect();
+                for key in held {
+                    // Release keys through the same iOS path so Shift/Ctrl
+                    // modifier bits cannot remain stuck while Nova is open.
+                    game.host.ios_virtual_key(event_loop, key, false);
+                }
+            }
+            let id = match self {
+                App::Loading(loading) => loading.window.as_ref().map(|w| w.id()),
+                App::Ready(game) => game.host.window.as_ref().map(|w| w.id()),
+            };
+            if let Some(id) = id {
+                for button in [MouseButton::Left, MouseButton::Right] {
+                    self.window_event_here(event_loop, id, WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Released,
+                        button,
+                    });
+                }
+            }
+        }
+        if modal {
+            // Discard all queued controls, chat and look movement during Nova UI.
+            let _ = ios_input::take();
+            return;
+        }
+        let id = match self {
+            App::Loading(loading) => loading.window.as_ref().map(|w| w.id()),
+            App::Ready(game) => game.host.window.as_ref().map(|w| w.id()),
+        };
+        let Some(id) = id else { return };
+        for input in horizon_client_input::ios_input::take() {
+            match input {
+                Input::Key(code, down) => {
+                    let Some(key) = Self::ios_key_code(code) else { continue };
+                    // Winit KeyEvent has private platform fields: use Horizon's
+                    // supported mapped-key input path instead of fabricating one.
+                    match self {
+                        App::Ready(game) => {
+                            game.host.ios_virtual_key(event_loop, key, down);
+                        }
+                        App::Loading(loading) => {
+                            if down {
+                                loading.menu_key_focus(event_loop, key);
+                            }
+                        }
+                    }
+                }
+                Input::Mouse(button, down) => {
+                    self.window_event_here(
+                        event_loop, id,
+                        WindowEvent::MouseInput {
+                            device_id: DeviceId::dummy(),
+                            state: if down { ElementState::Pressed } else { ElementState::Released },
+                            button: if button == 1 { MouseButton::Right } else { MouseButton::Left },
+                        },
+                    );
+                }
+                Input::Cursor(x, y) => self.window_event_here(
+                    event_loop, id,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: winit::dpi::PhysicalPosition::new(x, y),
+                    },
+                ),
+                Input::Motion(x, y) => {
+                    if let App::Ready(game) = self {
+                        let host = &mut game.host;
+                        if host.screen == Screen::Playing
+                            && host.title.is_none()
+                            && !host.screen_over_playing()
+                            && !host.scripted_run()
+                            && host.pending_save.is_none()
+                            && !host.pad_radial_captures()
+                        {
+                            // UIKit has no desktop mouse grab. Once the
+                            // world is playing, use the iOS software capture.
+                            if !host.captured {
+                                host.capture(true);
+                            }
+                            if host.captured {
+                                host.mouse.add_motion(x, y);
+                                host.last_input = Instant::now();
+                            }
+                        }
+                    }
+                },
+                Input::Text(text) => self.window_event_here(
+                    event_loop, id,
+                    WindowEvent::Ime(winit::event::Ime::Commit(text)),
+                ),
+                Input::KeyboardClosed => {
+                    match self {
+                        App::Loading(loading) => {
+                            if let Some(window) = &loading.window {
+                                window.set_ime_allowed(false);
+                            }
+                        }
+                        App::Ready(game) => {
+                            if let Some(window) = &game.host.window {
+                                window.set_ime_allowed(false);
+                            }
+                        }
+                    }
+                }
+                Input::Close => self.window_event_here(
+                    event_loop, id, WindowEvent::CloseRequested,
+                ),
+            }
+        }
+    }
+
+    /// Primary-finger touch -> existing cursor/mouse input. All events travel
+    /// through Horizon's original menu/game handlers. Multi-touch contacts
+    /// never steal the active finger or leave a held mouse button behind.
+    #[cfg(target_os = "ios")]
+    fn ios_touch_mouse(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        touch: &winit::event::Touch,
+    ) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use winit::event::TouchPhase;
+        const EMPTY: u64 = u64::MAX;
+        static ACTIVE: AtomicU64 = AtomicU64::new(EMPTY);
+
+        let accepted = match touch.phase {
+            TouchPhase::Started => ACTIVE
+                .compare_exchange(EMPTY, touch.id, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
+            TouchPhase::Moved => ACTIVE.load(Ordering::SeqCst) == touch.id,
+            TouchPhase::Ended | TouchPhase::Cancelled => ACTIVE
+                .compare_exchange(touch.id, EMPTY, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
+        };
+        if !accepted {
+            return;
+        }
+        self.window_event_here(
+            event_loop,
+            id,
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: touch.location,
+            },
+        );
+        let state = match touch.phase {
+            TouchPhase::Started => Some(ElementState::Pressed),
+            TouchPhase::Ended | TouchPhase::Cancelled => Some(ElementState::Released),
+            TouchPhase::Moved => None,
+        };
+        if let Some(state) = state {
+            self.window_event_here(
+                event_loop,
+                id,
+                WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state,
+                    button: MouseButton::Left,
+                },
+            );
+        }
+    }
+    fn resumed_here(&mut self, event_loop: &ActiveEventLoop) {
         match self {
             App::Loading(loading) => loading.resumed(event_loop),
             App::Ready(game) => game.resumed(event_loop),
         }
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event_here(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        #[cfg(target_os = "ios")]
+        if let WindowEvent::Touch(touch) = &event {
+            if horizon_client_input::ios_input::touch_gestures()
+                && !horizon_client_input::ios_input::overlay_active()
+            {
+                self.ios_touch_mouse(event_loop, id, touch);
+            }
+            return;
+        }
         match self {
             App::Loading(loading) => loading.window_event(event_loop, id, event),
             App::Ready(game) => game.window_event(event_loop, id, event),
         }
     }
-    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+    fn device_event_here(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
         if let App::Ready(game) = self {
             game.device_event(event_loop, id, event);
         }
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait_here(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "ios")]
+        self.ios_drain_inputs(event_loop);
         enum Step {
             Waiting,
             Ready(Box<split::Split<'static>>),
@@ -466,7 +923,17 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                match if loading.menu.reload_packs || !loading.ready_for_handoff() {
+                // Keep the iOS title/loading screen responsive while the
+                // world-rest loader finishes. Joining an unfinished loader on
+                // UIKit's main thread would freeze the event loop.
+                #[cfg(target_os = "ios")]
+                let rest_pending = loading.loaded.as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .and_then(|loaded| loaded.rest_loader.as_ref())
+                    .is_some_and(|worker| !worker.handle.is_finished());
+                #[cfg(not(target_os = "ios"))]
+                let rest_pending = false;
+                match if loading.menu.reload_packs || rest_pending || !loading.ready_for_handoff() {
                     None
                 } else {
                     loading.loaded.take()
@@ -483,7 +950,12 @@ impl ApplicationHandler for App {
         };
         match step {
             Step::Waiting => {}
-            Step::Ready(game) => *self = App::Ready(game),
+            Step::Ready(game) => {
+                #[cfg(target_os = "ios")]
+                NOVA_IOS_PHASE.store(2, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("[nova-watchdog] handoff.game-ready");
+                *self = App::Ready(game);
+            },
             Step::Done => event_loop.exit(),
             Step::Failed(e) => {
                 if let App::Loading(loading) = self {
@@ -493,7 +965,7 @@ impl ApplicationHandler for App {
             }
         }
     }
-    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+    fn exiting_here(&mut self, event_loop: &ActiveEventLoop) {
         if let App::Ready(game) = self {
             game.exiting(event_loop);
         }

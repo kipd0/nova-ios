@@ -148,3 +148,9 @@ flag is cleared before the game entry, so the launcher returns on the next
 cold start. Open View Logs or use Export Logs to share the log. A log with
 no renderer success is evidence of an early startup problem, not proof of a
 Metal failure.
+
+### Tracked iOS integration (test-touch-screen)
+
+The CI-time Python source patches were migrated into tracked Rust and Cargo source files. The iOS build now compiles those changes directly; no patch scripts are applied during the build. iOS-specific paths are guarded with target_os where practical.
+
+The older 136 MiB main-thread stack-probe bypass was disabled in the original workflow and was deliberately not enabled during migration.
