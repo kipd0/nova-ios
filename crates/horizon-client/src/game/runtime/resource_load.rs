@@ -123,7 +123,9 @@ impl<'scope, T: Send + 'scope> Step<'scope, T> {
     }
     pub(super) fn join(self) -> T {
         match self {
-            Self::Thread(handle) => handle.join().unwrap(),
+            Self::Thread(handle) => handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             Self::Later(f) => f(),
         }
     }
@@ -842,7 +844,7 @@ pub(super) fn load_resources(
                 })
             });
             let game_cpu = startup::time("handoff.game_cpu", || {
-                GameCpuResources::load(&resolved, entity_models.as_deref())
+                GameCpuResources::load(&resolved, entity_models.as_deref(), role)
             });
             (game_cpu, textures.join())
         });

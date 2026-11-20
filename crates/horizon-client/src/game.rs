@@ -10401,6 +10401,7 @@ impl<'a> Game<'a> {
                     pack.source.clone(),
                 ),
                 None,
+                options.execution_role,
             )
         })?;
         let world = Game::world_for_mods(res.facts().air, 0);
