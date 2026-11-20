@@ -304,7 +304,7 @@ pub use horizon_client_core::key_display::{
 #[cfg(not(target_os = "android"))]
 pub fn learn_layout(event: &winit::event::KeyEvent) {
     use winit::keyboard::{Key, PhysicalKey};
-    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    // iOS: use platform-provided logical keys (modifier supplement unavailable).
     let PhysicalKey::Code(code) = event.physical_key else {
         return;
     };
@@ -312,7 +312,7 @@ pub fn learn_layout(event: &winit::event::KeyEvent) {
         return;
     };
     let learn = horizon_client_core::key_display::learn_layout;
-    match event.key_without_modifiers() {
+    match &event.logical_key {
         Key::Character(text) => learn(name, &text),
         Key::Dead(Some(c)) => learn(name, c.encode_utf8(&mut [0; 4])),
         _ => {}
@@ -361,6 +361,7 @@ pub fn layout_key_name(
 /// doesn't identify; 0 when there is neither. Stable within a platform only.
 pub fn raw_key_code(physical: winit::keyboard::PhysicalKey) -> u32 {
     use winit::keyboard::{NativeKeyCode, PhysicalKey};
+    #[cfg(not(target_os = "ios"))]
     use winit::platform::scancode::PhysicalKeyExtScancode;
     match physical {
         PhysicalKey::Unidentified(native) => match native {
@@ -368,7 +369,10 @@ pub fn raw_key_code(physical: winit::keyboard::PhysicalKey) -> u32 {
             NativeKeyCode::MacOS(c) | NativeKeyCode::Windows(c) => c.into(),
             NativeKeyCode::Unidentified => 0,
         },
+        #[cfg(not(target_os = "ios"))]
         PhysicalKey::Code(_) => physical.to_scancode().unwrap_or(0),
+        #[cfg(target_os = "ios")]
+        PhysicalKey::Code(_) => 0, // No native scancode on UIKit.
     }
 }
 

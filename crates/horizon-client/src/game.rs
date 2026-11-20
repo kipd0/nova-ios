@@ -9627,7 +9627,9 @@ impl Game<'_> {
                         Screen::Playing => {
                             if pressed && !self.captured {
                                 self.capture(true);
-                                return Ok(());
+                                if !cfg!(target_os = "ios") {
+                                    return Ok(());
+                                }
                             }
                             let input = horizon_client::keybinds::mouse_name(button);
                             if self.key_mapping_canceled(Some(input.as_str()), pressed) {

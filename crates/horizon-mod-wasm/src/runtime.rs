@@ -174,9 +174,11 @@ pub(crate) fn test_engine() -> Engine {
 }
 
 /// The settings of the engine mods run on, without its epoch ticker.
-pub(crate) fn engine_config() -> wasmtime::Config {
+pub(crate) fn engine_config() -> wasmtime::Result<wasmtime::Config> {
     let mut config = wasmtime::Config::new();
     without_threads(&mut config);
+    #[cfg(target_os = "ios")]
+    config.target("pulley64")?;
     config.epoch_interruption(ENGINE_CONFIG.1);
     config.max_wasm_stack(horizon_guest_stack::GUEST_STACK_BYTES);
     // Wasmtime validates this bound even for synchronous engines. No async
@@ -184,12 +186,19 @@ pub(crate) fn engine_config() -> wasmtime::Config {
     config.async_stack_size(
         horizon_guest_stack::GUEST_STACK_BYTES + horizon_guest_stack::HOST_HEADROOM,
     );
-    config
+    Ok(config)
 }
 
 pub(crate) fn engine() -> wasmtime::Result<Engine> {
-    let config = engine_config();
+    let config = engine_config()?;
     let engine = Engine::new(&config)?;
+    #[cfg(target_os = "ios")]
+    {
+        if !engine.is_pulley() {
+            return Err(wasmtime::Error::msg("Nova iOS: Pulley interpreter was not selected"));
+        }
+        log::info!("Nova iOS wasm runtime: Pulley interpreter (pulley64)");
+    }
     let weak = engine.weak();
     std::thread::Builder::new()
         .name("wasm epoch".into())

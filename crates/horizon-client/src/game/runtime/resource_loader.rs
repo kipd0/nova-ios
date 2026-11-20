@@ -253,6 +253,7 @@ pub(super) fn run_loading(
     pack_error: Option<String>,
     started: Instant,
 ) -> Result<()> {
+    loading_screen::nova_diag("resources.loading.begin");
     let progress = Progress::new();
     let (receiver, loader) = startup_menu::spawn_loader(
         &options,
@@ -288,7 +289,11 @@ pub(super) fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    loading_screen::nova_diag("winit.event-loop.begin");
+    let event_loop = EventLoop::new()?;
+    loading_screen::nova_diag("winit.event-loop.created");
+    let result = event_loop.run_app(&mut app);
+    loading_screen::nova_diag("winit.run-app.returned");
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.

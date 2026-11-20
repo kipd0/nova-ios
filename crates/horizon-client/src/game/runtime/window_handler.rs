@@ -371,6 +371,17 @@ impl ApplicationHandler for Game<'_> {
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
         let attributes =
             horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
+        #[cfg(target_os = "ios")]
+        let attributes = {
+            use winit::platform::ios::{
+                ScreenEdge, ValidOrientations, WindowAttributesExtIOS,
+            };
+            attributes
+                .with_prefers_status_bar_hidden(true)
+                .with_prefers_home_indicator_hidden(true)
+                .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
+                .with_valid_orientations(ValidOrientations::Landscape)
+        };
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -383,13 +394,17 @@ impl ApplicationHandler for Game<'_> {
         self.unclaimed_window = agent_started && !self.options.offscreen;
         // `--offscreen` renders into a texture: its window would only show white.
         let window_step = startup::step("window.create");
-        let window = match event_loop.create_window(
-            attributes
-                .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
-                .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
-                .with_visible(!self.options.offscreen)
-                .with_active(!agent_started),
-        ) {
+        #[cfg(target_os = "ios")]
+        let attributes = attributes
+            .with_visible(!self.options.offscreen)
+            .with_active(!agent_started);
+        #[cfg(not(target_os = "ios"))]
+        let attributes = attributes
+            .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
+            .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
+            .with_visible(!self.options.offscreen)
+            .with_active(!agent_started);
+        let window = match event_loop.create_window(attributes) {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 self.error = Some(e.into());
@@ -397,6 +412,7 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         };
+        #[cfg(not(target_os = "ios"))]
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
         #[cfg(target_os = "windows")]
         if let Some(hwnd) = hwnd(&window) {
@@ -437,11 +453,18 @@ impl ApplicationHandler for Game<'_> {
         };
         self.handle_window_event(event_loop, id, event, input_trace::InputOrigin::User);
         if let Some((event, modifiers)) = key {
+            #[cfg(not(target_os = "ios"))]
             use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
             let name = match event.physical_key {
                 PhysicalKey::Code(code) => horizon_client::keybinds::key_name(code),
                 PhysicalKey::Unidentified(_) => None,
             };
+            #[cfg(target_os = "ios")]
+            let layout_key = horizon_client::keybinds::layout_key_name(
+                event.physical_key,
+                &event.logical_key,
+            );
+            #[cfg(not(target_os = "ios"))]
             let layout_key = horizon_client::keybinds::layout_key_name(
                 event.physical_key,
                 &event.key_without_modifiers(),
@@ -465,7 +488,7 @@ impl ApplicationHandler for Game<'_> {
             && !self.scripted_run()
             && !self.unclaimed_window
             && self.captured
-            && self.focused
+            && (self.focused || cfg!(target_os = "ios"))
             && self.keyboard_mouse
             && (!self.options.offscreen || self.split_window)
             && self.screen == Screen::Playing

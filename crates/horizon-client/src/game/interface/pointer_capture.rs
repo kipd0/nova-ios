@@ -27,7 +27,7 @@ impl Game<'_> {
         let grabbed = pointer
             && self.screen == Screen::Playing
             && (self.player.is_some() || self.studio.flying());
-        let active = self.focused || self.agent_pointer;
+        let active = self.focused || self.agent_pointer || cfg!(target_os = "ios");
         if active
             && grabbed
             && mod_api::__private::listened(mod_api::HookId::CalculatePlayerTurn)
@@ -156,8 +156,8 @@ impl Game<'_> {
         if grab_refused(Grab {
             capture,
             title_open: self.title.is_some(),
-            game_focused: self.focused,
-            window_focused,
+            game_focused: self.focused || cfg!(target_os = "ios"),
+            window_focused: window_focused || cfg!(target_os = "ios"),
             internal_grab: self.internal_grab(),
             unclaimed_window: self.unclaimed_window,
             scripted_run: self.scripted_run(),
@@ -205,7 +205,7 @@ impl Game<'_> {
         };
         let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
         let was_grabbed = self.captured;
-        if self.internal_grab() {
+        if self.internal_grab() || cfg!(target_os = "ios") {
             // Its grab is internal (an agent turns the view with `mouse-move`). A grab the
             // window already held when a scripted run began stays the system's until the
             // run ends (`settle_after_run`).

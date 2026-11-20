@@ -122,6 +122,14 @@ pub(super) fn build_renderer(
 /// The loading screen's renderer: one atlas (the boot screen's until the
 /// pack's GUI atlas is ready) over one opaque white block-sprite layer, an
 /// empty border texture and the title panorama once the menu bundle is ready.
+#[inline(never)]
+fn nova_ios_poll_renderer<F: std::future::Future>(future: F) -> F::Output {
+    loading_screen::nova_diag("loading_renderer.poll.helper.enter");
+    let value = pollster::block_on(future);
+    loading_screen::nova_diag("loading_renderer.poll.helper.returned");
+    value
+}
+
 pub(super) fn loading_renderer(
     window: Arc<Window>,
     offscreen: bool,
@@ -131,13 +139,16 @@ pub(super) fn loading_renderer(
     api: horizon_client::graphics::GraphicsApi,
     rays: bool, // The startup pick declares `[ray_tracing]`: the world renderer keeps this device.
 ) -> Result<Renderer> {
+    loading_screen::nova_diag("loading_renderer.entry");
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
     static EMPTY_GLINT: [u8; 4] = [0; 4];
+    loading_screen::nova_diag("loading_renderer.panorama.begin");
     let panorama = panorama
         .cloned()
         .unwrap_or_else(|| Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])));
     // `pixels()`: the loading screen keeps them compressed once its renderer has them.
+    loading_screen::nova_diag("loading_renderer.panorama.ready");
     let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice().into(), 1, 1), |a| {
         (a.pixels(), a.width, a.height)
     });
@@ -148,10 +159,19 @@ pub(super) fn loading_renderer(
     // A glyph rasterized into an earlier texture is not in these pixels; the
     // new texture gets it again when the character is drawn (see
     // `build_renderer`).
+    loading_screen::nova_diag("loading_renderer.atlas.ready");
     if let Some(atlas) = atlas {
+        loading_screen::nova_diag("loading_renderer.font-cache-reset.begin");
         atlas.font.reset_cache();
+        loading_screen::nova_diag("loading_renderer.font-cache-reset.done");
     }
-    let mut renderer = pollster::block_on(Renderer::new(
+    loading_screen::nova_diag("loading_renderer.renderer-new.begin");
+    loading_screen::nova_diag("loading_renderer.graphics-default.begin");
+    let graphics = horizon_client::graphics::Graphics::default();
+    loading_screen::nova_diag("loading_renderer.graphics-default.done");
+    let display = previous.map(|r| r.display_reading()).unwrap_or_default();
+    loading_screen::nova_diag("loading_renderer.display-reading.ready");
+    let future = Renderer::new(
         window,
         offscreen,
         &[255, 255, 255, 255],
@@ -172,13 +192,23 @@ pub(super) fn loading_renderer(
         false,
         (false, false),
         // An 8-bit frame, which HDR output takes as well: HDR off until the settings apply.
-        &horizon_client::graphics::Graphics::default(),
+        &graphics,
         horizon_client::gfx::FrameRequest {
             ray_tracing: rays,
             ..Default::default()
         },
-        previous.map(|r| r.display_reading()).unwrap_or_default(),
-    ))?;
+        display,
+    );
+    loading_screen::nova_diag(&format!(
+        "loading_renderer.future.created; bytes={}",
+        std::mem::size_of_val(&future)
+    ));
+    let future = Box::pin(future);
+    loading_screen::nova_diag("loading_renderer.future.boxed");
+    loading_screen::nova_diag("loading_renderer.poll.begin");
+    let mut renderer = nova_ios_poll_renderer(future)?;
+    loading_screen::nova_diag("loading_renderer.poll.completed");
+    loading_screen::nova_diag("loading_renderer.renderer-new.done");
     if let Some(atlas) = atlas {
         renderer.hud.sprite_animations = atlas
             .sprite_animations
@@ -186,6 +216,7 @@ pub(super) fn loading_renderer(
             .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
             .collect();
     }
+    loading_screen::nova_diag("loading_renderer.completed");
     Ok(renderer)
 }
 

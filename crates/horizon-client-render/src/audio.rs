@@ -6,6 +6,16 @@
 //! and attenuated, multi-channel buffers (stereo music and records) played
 //! direct as OpenAL does.
 use crate::Result;
+
+#[cfg(target_os = "ios")]
+fn nova_ios_audio_trace(stage: &str) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(file, "[audio] {stage}");
+        }
+    }
+}
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
     Sounds, TickContext,
@@ -1534,10 +1544,14 @@ impl Audio {
             Err(e) => {
                 if output {
                     log::warn!("Horizon: no sound: {e}");
+                    #[cfg(target_os = "ios")]
+                    nova_ios_audio_trace(&format!("output.open.failed: {e}"));
                 }
                 (None, false)
             }
         };
+        #[cfg(target_os = "ios")]
+        nova_ios_audio_trace(&format!("output.initialized; live={live}"));
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
         #[cfg(feature = "audio")]

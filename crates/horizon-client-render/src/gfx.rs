@@ -2248,6 +2248,13 @@ pub use device::*;
 /// only sign of where the game stopped. The log file is written unbuffered;
 /// the flush is for loggers that buffer.
 fn startup_step(step: std::fmt::Arguments) {
+    if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(file, "[renderer] {step}");
+            let _ = file.flush();
+        }
+    }
     log::info!("Horizon renderer: {step}");
     log::logger().flush();
 }
@@ -2340,15 +2347,8 @@ impl Renderer {
         request: output::FrameRequest,
         display: output::DisplayReading,
     ) -> Result<Self> {
-        let Opened {
-            instance,
-            surface,
-            adapter,
-            device,
-            queue,
-            device_lost,
-            configured,
-        } = match previous {
+        startup_step(format_args!("renderer.new.entry"));
+        let opened = match previous {
             // Reload resources on the same device; replacing live Vulkan
             // devices can invalidate the driver's swapchain state on the same
             // window.
@@ -2378,10 +2378,75 @@ impl Renderer {
                 }
             }
             None => {
+                startup_step(format_args!("renderer.new.open_device.begin"));
                 let _step = crate::spans::startup::step("renderer.open_device");
                 open_device(&window, offscreen, api, request.needs(layers)).await?
             }
         };
+        startup_step(format_args!("renderer.async.device-opened"));
+        Self::nova_ios_finish_new(
+            opened,
+            window,
+            offscreen,
+            sprite_pixels,
+            sprite_size,
+            sprite_minimum_size,
+            layers,
+            sprite_mips,
+            animations,
+            hud_atlas,
+            glint,
+            glint_armor,
+            forcefield,
+            panorama_faces,
+            prepared,
+            previous,
+            api,
+            translucent_batching,
+            (shader_pack, pack_starts_wide),
+            settings,
+            request,
+            display,
+        )
+    }
+    /// iOS runner-only stack isolation for the synchronous GPU pipeline setup.
+    #[inline(never)]
+    fn nova_ios_finish_new(
+        opened: Opened,
+        window: Arc<Window>,
+        offscreen: bool,
+        sprite_pixels: &[u8],
+        sprite_size: u32,
+        sprite_minimum_size: u32,
+        layers: u32,
+        sprite_mips: &[crate::mipmap::Settings],
+        animations: &[SpriteAnimation],
+        hud_atlas: (&[u8], u32, u32),
+        glint: (&[u8], u32, u32),
+        glint_armor: (&[u8], u32, u32),
+        forcefield: (&[u8], u32),
+        panorama_faces: Arc<panorama::Faces>,
+        prepared: Option<PreparedTextures>,
+        previous: Option<&Self>,
+        _api: GraphicsApi,
+        translucent_batching: bool,
+        (shader_pack, pack_starts_wide): (bool, bool),
+        // The settings and the pack's `request` pick the frame (`output::resolve_frame`),
+        // with what this window's display reported to the renderer before (`display`).
+        settings: &crate::graphics::Graphics,
+        request: output::FrameRequest,
+        display: output::DisplayReading,
+    ) -> Result<Self> {
+        startup_step(format_args!("renderer.finish.enter"));
+        let Opened {
+            instance,
+            surface,
+            adapter,
+            device,
+            queue,
+            device_lost,
+            configured,
+        } = opened;
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
         let split = check_layers(&adapter, layers)?;

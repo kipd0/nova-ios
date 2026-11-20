@@ -2,6 +2,15 @@
 #[path = "horizon_look.rs"]
 mod horizon_look;
 use crate::{crash, game, logging};
+
+fn nova_entry_trace(stage: &str) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(f, "[engine-entry] {stage}");
+        }
+    }
+}
 use horizon_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) mod dedicated_arguments;
 pub(crate) mod runtime_environment;
@@ -24,6 +33,7 @@ impl Startup {
 /// and resource marker metadata only: no logging, account loading, mods or worker threads.
 /// Account IO, cwd changes and command registration remain in Options::read, after leases.
 pub fn prepare() -> Startup {
+    #[cfg(not(target_os = "ios"))]
     horizon_mod_package::holder::enter();
     let result: crate::Result<_> = (|| {
         let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -39,7 +49,10 @@ pub fn prepare() -> Startup {
     let Some(options) = options else {
         std::process::exit(0);
     };
+    #[cfg(not(target_os = "ios"))]
     let capture = horizon_mod_package::holder::acquire(&launch);
+    #[cfg(target_os = "ios")]
+    let capture = None;
     Startup {
         launch,
         options,
@@ -98,6 +111,7 @@ pub fn start<G>(
     code: CodeRuntime,
     startup: Startup,
 ) {
+    nova_entry_trace("main_with.begin");
     let _ = CODE_RUNTIME.set(code);
     let Startup {
         launch,
@@ -217,7 +231,9 @@ pub fn start<G>(
     }
     install_client_hooks();
     raise_open_file_limit();
+    nova_entry_trace("game.run_with.begin");
     if let Err(error) = game::run_with(options, native) {
+        nova_entry_trace(&format!("game.run_with.error: {error}"));
         // A bad command line is the caller's mistake, not a crash: no report.
         let missing_mods = game::dedicated::is_missing_mods_refusal(error.as_ref());
         let usage = error.is::<game::UsageError>() || missing_mods;
