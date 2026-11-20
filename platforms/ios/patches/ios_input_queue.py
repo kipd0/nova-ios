@@ -114,7 +114,14 @@ special = {
     1007: "Backspace", 1008: "ArrowUp", 1009: "ArrowDown",
     1010: "ArrowLeft", 1011: "ArrowRight", 1012: "F1",
     1013: "F2", 1014: "F3", 1015: "F5", 1016: "F11",
-    1017: "Slash",
+    1017: "Slash", 1018: "F4", 1019: "F6",
+    1020: "F7", 1021: "F8", 1022: "F9", 1023: "F10",
+    1024: "F12", 1025: "AltLeft", 1026: "ShiftRight",
+    1027: "ControlRight", 1028: "AltRight",
+    1029: "Comma", 1030: "Period", 1031: "Minus",
+    1032: "Equal", 1033: "Backquote", 1034: "BracketLeft",
+    1035: "BracketRight", 1036: "Backslash",
+    1037: "Semicolon", 1038: "Quote", 1039: "CapsLock",
 }
 for number, key in special.items():
     rows.append(f"            {number} => KeyCode::{key},")
@@ -149,6 +156,24 @@ change("crates/horizon-client/src/game/runtime/loading_screen.rs",
         }
 """)
 
+# Bind the iOS keyboard adapter beside Horizon's existing control handler.
+# The original gameplay logic is not modified. A single iOS-gated include is
+# added in the temporary build checkout, so the private in-process command
+# handler can be reused without making upstream APIs public or opening sockets.
+adapter_path = Path("crates/horizon-client/src/game/runtime/ios_control_key.inc")
+assert not adapter_path.exists(), "Upstream now has an iOS input adapter"
+adapter_path.write_text(
+    Path("platforms/ios/adapters/ios_control_key.rs").read_text(encoding="utf-8"),
+    encoding="utf-8",
+)
+control_path = Path("crates/horizon-client/src/game/runtime/control.rs")
+control_src = control_path.read_text(encoding="utf-8")
+assert 'include!("ios_control_key.inc")' not in control_src
+control_path.write_text(
+    control_src + '\n#[cfg(target_os = "ios")]\ninclude!("ios_control_key.inc");\n',
+    encoding="utf-8",
+)
+
 # The mapped-key handler deliberately handles gameplay bindings, not raw
 # keyboard callbacks for chat, title screens or debug overlays. Give iOS
 # physical keys the same high-level screen handling without attempting to
@@ -182,6 +207,16 @@ impl Game<'_> {
         key: KeyCode,
         pressed: bool,
     ) -> Result<()> {
+        // In a running world, use the same keyboard command handler as
+        // Horizon's built-in control interface. This reaches mod KeyMappings
+        // and input hooks as well as normal game controls.
+        if self.title.is_none() {
+            return self.ios_control_key(event_loop, key, pressed);
+        }
+
+        // The upstream control interface rejects input before a world opens.
+        // Retain minimal title/menu navigation until Horizon exposes a public
+        // input injection API that also works before the world exists.
         if pressed {
             self.physical_keys.insert(key);
             self.input_keyboard_used();
