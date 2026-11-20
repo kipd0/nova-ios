@@ -64,7 +64,7 @@ private final class NovaRecordingProtectedView: UIView {
             let types = secureField.subviews
                 .map { String(describing: type(of: $0)) }
                 .joined(separator: ",")
-            NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-missing; children=\\(types)")
+            NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-missing; children=\(types)")
             return
         }
 
@@ -78,10 +78,17 @@ private final class NovaRecordingProtectedView: UIView {
         canvas.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         addSubview(canvas)
         secureCanvas = canvas
-        NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-found")
+        NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-found; type=\(String(describing: type(of: canvas)))")
     }
 
     required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // UITextField's detached canvas must occupy the entire overlay, not
+        // the small original text-entry frame or a UIKit-generated inset.
+        secureCanvas?.frame = bounds
+    }
 
     func host(_ views: [UIView]) -> Bool {
         guard let canvas = secureCanvas else {
@@ -273,7 +280,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
         let enabled = UserDefaults.standard.bool(forKey: "nova.touch.hideButtonsFromRecording")
         let views = activeControls.map { $0.view }
         if enabled && recordingProtection.host(views) {
-            NovaDiagnostics.record("overlay.capture-buttons.enabled; protected=\\(views.count)")
+            NovaDiagnostics.record("overlay.capture-buttons.enabled; protected=\(views.count)")
         } else {
             recordingProtection.clearTargets()
             for view in views { overlay.addSubview(view) }
