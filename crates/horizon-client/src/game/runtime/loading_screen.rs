@@ -713,7 +713,11 @@ impl App {
         let was_modal = WAS_MODAL.swap(modal, AtomicOrdering::Relaxed);
         if modal && !was_modal {
             if let App::Ready(game) = self {
-                let held: Vec<KeyCode> = game.host.physical_keys.iter().copied().collect();
+                // A mod can reject a gameplay press and still observe its raw key event.
+                let held: Vec<KeyCode> = game.host.physical_keys
+                    .union(&game.host.rejected_keys)
+                    .copied()
+                    .collect();
                 for key in held {
                     // Release keys through the same iOS path so Shift/Ctrl
                     // modifier bits cannot remain stuck while Nova is open.

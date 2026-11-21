@@ -159,6 +159,41 @@ impl Game<'_> {
             Source::Agent | Source::Mod => false,
         }
     }
+    /// A physical key that reached the active screen's fallback handling.
+    pub(super) fn unhandled_key(
+        &mut self,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+    ) -> Result<()> {
+        if self.key_press_canceled(key, pressed, repeat) {
+            return Ok(());
+        }
+        self.native_panel_key_event(key, pressed, repeat);
+        // Screen.keyPressed sees the physical key, repeats included.
+        if pressed
+            && self.screen == Screen::Inventory
+            && (self.merchant_key(key) || self.recipe_book_key(key))
+        {
+            return Ok(());
+        }
+        if pressed
+            && !repeat
+            && horizon_client::keybinds::key_name(key)
+                .is_some_and(|n| self.settings.keys.get("key.smoothCamera") == n)
+        {
+            self.smooth_camera_action();
+        }
+        // ScreenEvent.KeyPressed.Post / KeyReleased.Post: no screen arm
+        // took the key, so the open screen's `keyPressed` returned
+        // false; a cancel marks it handled and the game's own key
+        // handling never sees it.
+        if self.screen_key_post(key, pressed, repeat) {
+            return Ok(());
+        }
+        self.mapped_key_event(key, pressed, repeat)
+    }
+
     /// Apply a physical key to every mapping bound to it.
     pub(super) fn mapped_key_event(
         &mut self,

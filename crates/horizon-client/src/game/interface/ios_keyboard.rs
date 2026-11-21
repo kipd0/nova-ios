@@ -1,4 +1,4 @@
-// game-module-cfg: target_os = "ios"
+// game-module-cfg: any(target_os = "ios", test)
 //! Nova's iOS-only physical-key adapter.
 //! UIKit controls and the software keyboard share this path. The native winit
 //! KeyEvent type is intentionally never fabricated: its platform fields are private.
@@ -12,9 +12,18 @@ impl Game<'_> {
         key: KeyCode,
         pressed: bool,
     ) {
-        if let Err(error) = self.ios_virtual_key_inner(event_loop, key, pressed) {
-            log::warn!("Nova iOS input: {key:?} ({pressed}): {error}");
-        }
+        self.with_user_input(true, |game| {
+            if let Err(error) = game.ios_virtual_key_inner(event_loop, key, pressed) {
+                log::warn!("Nova iOS input: {key:?} ({pressed}): {error}");
+            }
+            game.settle_title_mode();
+            let action = if pressed {
+                mod_api::KeyAction::Press
+            } else {
+                mod_api::KeyAction::Release
+            };
+            game.virtual_key_input(key, action);
+        });
     }
 
     fn ios_virtual_key_inner(
@@ -56,14 +65,24 @@ impl Game<'_> {
             return Ok(());
         }
         if !pressed {
+            if self.screen_key_released(key) {
+                self.keys.remove(&key);
+                return self.mapped_key_event(key, false, false);
+            }
+            if self.screen == Screen::Options {
+                self.ui.options.modifiers = self.modifiers().bits;
+                let events = self.ui.options.key_released(&mut self.settings, key);
+                self.handle_option_events(events)?;
+            }
             if self.screen == Screen::Chat && self.title.is_none() {
                 self.keys.remove(&key);
             }
-            return self.mapped_key_event(key, false, false);
+            return self.unhandled_key(key, false, false);
         }
 
-        // Vanilla uses raw keys for the active screen before translating a
-        // key into movement or another mapped gameplay action.
+        if self.screen_key_pressed(key, false) {
+            return Ok(());
+        }
         if self.key_focus_key(event_loop, key) {
             return Ok(());
         }
@@ -162,8 +181,6 @@ impl Game<'_> {
             return Ok(());
         }
 
-        // Movement, jump, inventory and other gameplay mappings remain the
-        // original Horizon implementation. Don't alter camera or touch input.
-        self.mapped_key_event(key, true, false)
+        self.unhandled_key(key, true, false)
     }
 }

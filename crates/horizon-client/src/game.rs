@@ -10049,37 +10049,7 @@ impl Game<'_> {
                         return Ok(());
                     };
                     let pressed = event.state == ElementState::Pressed;
-                    if self.key_press_canceled(key, pressed, event.repeat) {
-                        return Ok(());
-                    }
-                    self.native_panel_key_event(
-                        key,
-                        event.state == ElementState::Pressed,
-                        event.repeat,
-                    );
-                    // Screen.keyPressed sees the physical key, repeats included.
-                    if event.state == ElementState::Pressed
-                        && self.screen == Screen::Inventory
-                        && (self.merchant_key(key) || self.recipe_book_key(key))
-                    {
-                        return Ok(());
-                    }
-                    if event.state == ElementState::Pressed
-                        && !event.repeat
-                        && horizon_client::keybinds::key_name(key)
-                            .is_some_and(|n| self.settings.keys.get("key.smoothCamera") == n)
-                    {
-                        self.smooth_camera_action();
-                    }
-                    // ScreenEvent.KeyPressed.Post / KeyReleased.Post: no screen arm
-                    // took the key, so the open screen's `keyPressed` returned
-                    // false; a cancel marks it handled and the game's own key
-                    // handling never sees it.
-                    if self.screen_key_post(key, event.state == ElementState::Pressed, event.repeat)
-                    {
-                        return Ok(());
-                    }
-                    self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
+                    self.unhandled_key(key, pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
                     horizon_client::spans::time("recover_device", || self.recover_device())?;
