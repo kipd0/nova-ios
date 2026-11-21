@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import UniformTypeIdentifiers
 import SafariServices
 
 /// Nova's game-ready home screen. Keep all launcher presentation on the iOS
@@ -17,9 +16,7 @@ struct NovaMenuView: View {
     @State private var confirmClose = false
     @State private var showDiscord = false
     @State private var packCategory: NovaPackCategory?
-    @State private var showGameFolder = false
-    @State private var gameFolder: URL?
-    @State private var folderError: String?
+    @State private var showMods = false
 
     // Exact colors requested for the redesign.
     private enum Palette {
@@ -61,7 +58,7 @@ struct NovaMenuView: View {
                             tile("discord", size: labelSize) { showDiscord = true }
                             tile("download shaders", size: labelSize) { packCategory = .shader }
                             tile("download resource packs", size: labelSize) { packCategory = .resourcePack }
-                            tile("open game directory", size: labelSize) { openGameFolder() }
+                            tile("manage mods", size: labelSize) { showMods = true }
                         }
                         .frame(width: columnWidth)
                         .frame(height: tileHeight * 4 + gap * 3)
@@ -86,17 +83,8 @@ struct NovaMenuView: View {
         .sheet(item: $packCategory) { category in
             NovaPackBrowser(category: category)
         }
-        .sheet(isPresented: $showGameFolder) {
-            if let gameFolder {
-                NovaGameFolderPicker(startingDirectory: gameFolder)
-            }
-        }
-        .alert("Unable to open game directory",
-               isPresented: Binding(get: { folderError != nil },
-                                    set: { if !$0 { folderError = nil } })) {
-            Button("OK", role: .cancel) { folderError = nil }
-        } message: {
-            Text(folderError ?? "The game folder is unavailable.")
+        .sheet(isPresented: $showMods) {
+            NovaModsView()
         }
         .confirmationDialog("Force close Nova?", isPresented: $confirmClose) {
             Button("Force Close App", role: .destructive, action: onClose)
@@ -175,14 +163,6 @@ struct NovaMenuView: View {
         .buttonStyle(.plain)
     }
 
-    private func openGameFolder() {
-        do {
-            gameFolder = try NovaGameFiles.gameDirectory()
-            showGameFolder = true
-        } catch {
-            folderError = error.localizedDescription
-        }
-    }
 }
 
 /// Safari's in-app browser avoids requiring the Discord app to be installed.
@@ -192,21 +172,6 @@ private struct NovaDiscordBrowser: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
-}
-
-/// Present the system Files picker at the real Documents/Game folder.
-/// Do not copy, export, or move large worlds/resources just to browse them.
-private struct NovaGameFolderPicker: UIViewControllerRepresentable {
-    let startingDirectory: URL
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
-        picker.directoryURL = startingDirectory
-        picker.shouldShowFileExtensions = true
-        return picker
-    }
-
-    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
 }
 
 /// Only public Minecraft names/UUIDs appear here. Secrets stay in Keychain.

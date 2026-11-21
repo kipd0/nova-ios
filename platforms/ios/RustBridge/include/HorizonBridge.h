@@ -25,6 +25,12 @@ int32_t nova_ios_install_resources_zip(const char *zip_path,
 bool nova_ios_resources_present(const char *destination_path);
 
 
+// Scan returns owned UTF-8 JSON. Release it with nova_ios_free_mod_list.
+char *nova_ios_scan_mods(const char *game_home, char *error, uintptr_t capacity);
+void nova_ios_free_mod_list(char *json);
+bool nova_ios_set_mod_enabled(const char *game_home, const char *id, bool enabled,
+                              char *error, uintptr_t capacity);
+
 // In-game UIKit overlay input; every control acts through Horizon's bindings.
 void nova_ios_input_key(uint32_t code, bool down);
 void nova_ios_input_mouse(uint32_t button, bool down);

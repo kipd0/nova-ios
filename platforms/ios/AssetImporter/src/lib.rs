@@ -4,6 +4,8 @@
 //!
 //! Resource loading into Horizon is a separate, not-yet-implemented milestone.
 
+pub mod mods;
+
 use std::{
     collections::HashSet,
     error::Error,
