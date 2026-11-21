@@ -1,6 +1,6 @@
 # Nova
 
-**Minecraft Java Edition on iOS and iPadOS, powered by [Horizon](https://github.com/horizon-rust/horizon).**
+**Minecraft Java Edition on iOS and iPadOS, powered by [Horizon](https://github.com/horizon-rust/horizon) ([Discord](https://discord.gg/aH9mtNDc24).**
 
 Nova is an iPhone and iPad launcher for Horizon, a Minecraft Java Edition implementation written in Rust. It adds a touch interface, account management, and game file tools for iOS while keeping the core game close to upstream Horizon.
 
