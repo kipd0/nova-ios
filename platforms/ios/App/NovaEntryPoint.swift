@@ -39,6 +39,9 @@ enum NovaEntryPoint {
                 } else {
                     NovaDiagnostics.record("boot.runtime-diagnostics-unavailable")
                 }
+                // Enable Horizon's experimental compatibility adapter for older servers (e.g. 26.2).
+                setenv("HORIZON_OLDER_SERVERS", "1", 1)
+                NovaDiagnostics.record("boot.older-servers.enabled")
                 // Select and renew the Microsoft session before Horizon reads it.
                 // All tokens remain in Keychain or a private, one-use tmp file.
                 NovaAccountBoot.prepare()
