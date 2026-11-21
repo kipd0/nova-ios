@@ -18,7 +18,7 @@ Nova is an iPhone and iPad launcher for Horizon, a Minecraft Java Edition implem
 
 ![Nova touch layout editor with custom buttons](docs/media/nova/custom-touch-layout.jpg)
 
-*Add, move, resize, copy, or remove on-screen controls. Assign keyboard keys, mouse buttons, or a movement joystick. Save and load your own layouts.*
+*Add, move, resize, copy, or remove on-screen controls. Assign keyboard keys, mouse buttons, or a movement joystick, ability to hide on-screen controls from recording. Save and load your own layouts.*
 
 ### iOS launcher
 
@@ -48,7 +48,7 @@ Nova uses **Horizon mods**, not the Java mod loaders used by the official Minecr
 | **Horizon content mods packaged as compatible `.hmod` files** | **Supported** when their required features are available in the iOS WASM runtime. |
 | **Horizon native-code mods** | **Not directly supported** by the iOS mod installer. These require native compilation or integration. |
 | **Fabric / Forge / NeoForge `.jar` mods** | **Not supported directly.** They need a separate port to Horizon. |
-| **Iris / OptiFine Java mods** | **Not supported directly.** Nova does not run Java mod JARs. |
+| **Java mods** | **Not supported directly.** Nova does not run Java mod JARs. |
 | **Mods that need missing Horizon hooks or unsupported WASM features** | **Not supported until the required engine/API support is added.** |
 
 A `.hmod` file is not guaranteed to work just because it can be installed. Compatibility depends on the mod, the Horizon version, and the features it uses. A mod may work in multiplayer but not in singleplayer, or the reverse.
