@@ -76,6 +76,38 @@ enum NovaGameFiles {
         return destination.lastPathComponent
     }
 
+    /// Stage a ZIP downloaded by URLSession. Move instead of copying it to
+    /// avoid using extra disk space on older iPads.
+    static func stageDownloadedZip(from source: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        let magic = try handle.read(upToCount: 4) ?? Data()
+        guard magic == Data([0x50, 0x4B, 0x03, 0x04]) else {
+            throw ArchiveError.invalidZip
+        }
+
+        let destination = try importsURL()
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(UUID().uuidString + ".zip")
+        do {
+            do {
+                try manager.moveItem(at: source, to: temporary)
+            } catch {
+                // A copy is the fallback if the temporary file is on
+                // another filesystem.
+                try manager.copyItem(at: source, to: temporary)
+            }
+            if manager.fileExists(atPath: destination.path) {
+                try manager.removeItem(at: destination)
+            }
+            try manager.moveItem(at: temporary, to: destination)
+        } catch {
+            try? manager.removeItem(at: temporary)
+            throw error
+        }
+        return destination.lastPathComponent
+    }
+
     /// Blocks while extracting. Call on a worker queue, not the main thread.
     static func prepareStoredZip() throws {
         guard let archive = try storedArchiveURL() else { throw ArchiveError.noArchive }
