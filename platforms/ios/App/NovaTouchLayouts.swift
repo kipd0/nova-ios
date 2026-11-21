@@ -66,13 +66,8 @@ enum NovaTouchLayouts {
         "Enter", "Tab", "Backspace", "E", "Q", "R", "F", "T", "G",
         "C", "V", "X", "Z", "B", "N", "M", "P", "I", "O", "L", "K",
         "J", "H", "U", "Y", "1", "2", "3", "4", "5", "6", "7",
-        "8", "9", "0", "F1", "F2", "F3", "F4", "F5", "F6",
-        "F7", "F8", "F9", "F10", "F11", "F12",
-        "Up", "Down", "Left", "Right", "Slash",
-        "Alt", "Right Shift", "Right Control", "Right Alt",
-        "Comma", "Period", "Minus", "Equal", "Backquote",
-        "Left Bracket", "Right Bracket", "Backslash",
-        "Semicolon", "Quote", "Caps Lock"
+        "8", "9", "0", "F1", "F2", "F3", "F5", "F11",
+        "Up", "Down", "Left", "Right", "Slash"
     ]
 
     static func keyCode(_ key: String) -> UInt32 {
@@ -88,18 +83,9 @@ enum NovaTouchLayouts {
             "Backspace": 1007, "Up": 1008, "Down": 1009,
             "Left": 1010, "Right": 1011, "F1": 1012,
             "F2": 1013, "F3": 1014, "F5": 1015, "F11": 1016,
-            "Slash": 1017, "F4": 1018, "F6": 1019,
-            "F7": 1020, "F8": 1021, "F9": 1022,
-            "F10": 1023, "F12": 1024, "Alt": 1025,
-            "Right Shift": 1026, "Right Control": 1027,
-            "Right Alt": 1028, "Comma": 1029, "Period": 1030,
-            "Minus": 1031, "Equal": 1032, "Backquote": 1033,
-            "Left Bracket": 1034, "Right Bracket": 1035,
-            "Backslash": 1036, "Semicolon": 1037, "Quote": 1038,
-            "Caps Lock": 1039
+            "Slash": 1017
         ]
-        // Do not silently turn an unsupported key into Space (jump).
-        return special[key] ?? 0
+        return special[key] ?? 1001
     }
 
     static func directory() throws -> URL {

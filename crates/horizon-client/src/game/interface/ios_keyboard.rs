@@ -23,16 +23,6 @@ impl Game<'_> {
         key: KeyCode,
         pressed: bool,
     ) -> Result<()> {
-        // In a running world, use the same keyboard command handler as
-        // Horizon's built-in control interface. This reaches mod KeyMappings
-        // and input hooks as well as normal game controls.
-        if self.title.is_none() {
-            return self.ios_control_key(event_loop, key, pressed);
-        }
-
-        // The upstream control interface rejects input before a world opens.
-        // Retain minimal title/menu navigation until Horizon exposes a public
-        // input injection API that also works before the world exists.
         if pressed {
             self.physical_keys.insert(key);
             self.input_keyboard_used();
