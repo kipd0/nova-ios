@@ -16,6 +16,7 @@ struct NovaMenuView: View {
     @State private var showAccounts = false
     @State private var confirmClose = false
     @State private var showDiscord = false
+    @State private var packCategory: NovaPackCategory?
     @State private var showGameFolder = false
     @State private var gameFolder: URL?
     @State private var folderError: String?
@@ -58,10 +59,8 @@ struct NovaMenuView: View {
 
                         VStack(spacing: gap) {
                             tile("discord", size: labelSize) { showDiscord = true }
-                            // These entries are deliberately visual-only until the
-                            // download features are implemented.
-                            tile("download shaders", size: labelSize, enabled: false) {}
-                            tile("download resources packs", size: labelSize, enabled: false) {}
+                            tile("download shaders", size: labelSize) { packCategory = .shader }
+                            tile("download resource packs", size: labelSize) { packCategory = .resourcePack }
                             tile("open game directory", size: labelSize) { openGameFolder() }
                         }
                         .frame(width: columnWidth)
@@ -83,6 +82,9 @@ struct NovaMenuView: View {
         }
         .sheet(isPresented: $showDiscord) {
             NovaDiscordBrowser()
+        }
+        .sheet(item: $packCategory) { category in
+            NovaPackBrowser(category: category)
         }
         .sheet(isPresented: $showGameFolder) {
             if let gameFolder {
@@ -159,7 +161,6 @@ struct NovaMenuView: View {
     private func tile(_ title: String,
                       tint: Color = Palette.button,
                       size: CGFloat,
-                      enabled: Bool = true,
                       action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
@@ -172,8 +173,6 @@ struct NovaMenuView: View {
                 .background(tint)
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
-        .accessibilityHint(enabled ? "" : "Coming in a future update")
     }
 
     private func openGameFolder() {
