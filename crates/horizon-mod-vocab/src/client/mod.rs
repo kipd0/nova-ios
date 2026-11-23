@@ -71,3 +71,4 @@ pub(crate) mod world_request;
 pub(crate) mod spectator_shader;
 
 pub(crate) mod arm_pose;
+pub(crate) mod boat;
