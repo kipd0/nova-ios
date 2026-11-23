@@ -72,6 +72,21 @@ impl<'a> PayloadRegistrar<'a> {
 }
 
 impl PayloadRegistrar<'_> {
+    /// Declare an exact third-party channel for client sends during configuration.
+    /// An opening message is sent once when each configuration starts, including
+    /// reconfiguration. Pass None to send only through ClientHost. No peer offer is
+    /// required. The body may contain up to 32,767 bytes, excluding the channel.
+    pub fn configuration_raw(
+        &mut self,
+        id: PayloadId,
+        opening: Option<crate::PayloadBytes>,
+    ) -> &mut Self {
+        self.registrar
+            .borrow_mut()
+            .add_configuration_raw(id, opening);
+        self
+    }
+
     /// Declare a raw play channel by its exact id (`bungeecord:main`,
     /// `voicechat:secret`): opaque bytes towards any peer, a vanilla client
     /// included, as a Paper plugin channel. It is not a negotiated payload:

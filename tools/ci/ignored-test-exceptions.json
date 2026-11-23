@@ -570,6 +570,14 @@
   {
     "package": "horizon-client-lib",
     "target": "lib",
+    "test": "net::configuration_raw_tests::wasm_configuration_raw_precedes_play_without_offer",
+    "path": "crates/horizon-client/src/net/configuration_raw_tests.rs",
+    "reason": "requires compiled HORIZON_WASM_FIXTURE and HORIZON_WASM_STD",
+    "rationale": "The compiled fixture and matching shared standard library are supplied explicitly by the wasm-fixture runner."
+  },
+  {
+    "package": "horizon-client-lib",
+    "target": "lib",
     "test": "raw_payloads::wasm_tests::compiled_guest_observes_physical_provider_pressure",
     "path": "crates/horizon-client/src/raw_payloads/wasm_tests.rs",
     "reason": "requires compiled HORIZON_WASM_FIXTURE and HORIZON_WASM_STD",

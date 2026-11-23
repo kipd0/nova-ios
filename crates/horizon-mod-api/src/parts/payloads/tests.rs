@@ -255,3 +255,28 @@ fn raw_channels_refuse_engine_namespaces_bare_ids_and_typed_collisions() {
     assert!(registrar.refused[0].starts_with("typed registered payload typed:data"));
     assert!(registrar.refused[0].contains("declared by rawmod"));
 }
+
+#[test]
+fn configuration_raw_refuses_invalid_openings_and_collisions_in_either_order() {
+    let mut registrar = PartRegistrar::new("test");
+    let id = PayloadId("test:raw".into());
+    let view = &mut registrar as &mut dyn Registrar;
+    let mut event = view.payload_handlers();
+    let mut raw = event.registrar("1");
+    raw.configuration_raw(PayloadId("minecraft:brand".into()), None)
+        .configuration_raw(PayloadId("not namespaced".into()), None)
+        .configuration_raw(id.clone(), Some(PayloadBytes(vec![0; 32_768])))
+        .configuration_raw(id.clone(), Some(PayloadBytes(vec![1; 32_767])))
+        .configuration_raw(id.clone(), None)
+        .configuration_to_server(id, handler());
+    let other = PayloadId("test:negotiated".into());
+    raw.configuration_to_server(other.clone(), handler())
+        .configuration_raw(other, None);
+    drop(raw);
+    assert_eq!(registrar.refused.len(), 6, "{:?}", registrar.refused);
+    let snapshot = frozen(&registrar);
+    let raw = snapshot.configuration_raw_channels().collect::<Vec<_>>();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(raw[0].1.unwrap().0.len(), 32_767);
+    assert_eq!(snapshot.declarations().count(), 1);
+}

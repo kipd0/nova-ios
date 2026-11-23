@@ -136,9 +136,17 @@ impl Endpoint {
             return Err(PayloadSendError::StaleEpoch);
         }
         epoch.peer.can_send(epoch.phase, id)?;
-        // A raw channel keeps vanilla's clientbound custom-payload limit, by name.
-        let limit = horizon_protocol::packets::custom_payload::CLIENTBOUND_LIMIT;
-        if epoch.peer.local.is_raw(&id.0) && bytes.0.len() > limit {
+        use horizon_protocol::packets::custom_payload::{CLIENTBOUND_LIMIT, SERVERBOUND_LIMIT};
+        let configuration_raw =
+            self.side() == Side::Client && epoch.peer.local.configuration_raw.contains(id);
+        let limit = match self.side() {
+            Side::Client if configuration_raw => Some(SERVERBOUND_LIMIT),
+            Side::Server if epoch.peer.local.is_raw(&id.0) => Some(CLIENTBOUND_LIMIT),
+            _ => None,
+        };
+        if let Some(limit) = limit
+            && bytes.0.len() > limit
+        {
             return Err(PayloadSendError::PayloadTooLarge {
                 id: id.clone(),
                 size: bytes.0.len() as u64,
@@ -162,9 +170,21 @@ impl Endpoint {
                     .cloned()
                     .ok_or(PayloadSendError::Disconnected)?;
                 preflight(writer.framing(), writer.payload_capacity(), len, id)?;
-                writer
-                    .prepare_payload(encode(epoch.phase, self.side(), id, bytes), id)
-                    .map(Prepared::Client)
+                // A raw channel has the same opaque body on older servers, but their
+                // configuration packet id can differ. Frame the peer's packet once.
+                let body = if configuration_raw {
+                    let packet = writer
+                        .server_version()
+                        .serverbound_id(
+                            horizon_protocol::State::Configuration,
+                            horizon_protocol::ids::configuration::serverbound::CUSTOM_PAYLOAD,
+                        )
+                        .ok_or_else(|| PayloadSendError::UnsupportedPeer(id.clone()))?;
+                    super::encode::with_packet_id(packet, id, bytes)
+                } else {
+                    encode(epoch.phase, self.side(), id, bytes)
+                };
+                writer.prepare_payload(body, id).map(Prepared::Client)
             }
             Target::Server(sender) => {
                 preflight(sender.payload_framing(), sender.payload_capacity(), len, id)?;
@@ -179,6 +199,29 @@ impl Endpoint {
                     .map(Prepared::Client)
             }
         }
+    }
+    /// Open the pre-offer configuration window for this physical client connection.
+    /// The empty peer table grants no negotiated sends. A later offer replaces it.
+    pub(crate) fn open_configuration_raw(&self) -> Result<(), String> {
+        let transport = self.transport();
+        transport.accept(&[])?;
+        let epoch = transport.epoch().ok_or("configuration connection closed")?;
+        for (id, opening) in transport
+            .local
+            .registry
+            .iter()
+            .flat_map(|r| r.configuration_raw_channels())
+        {
+            if let Some(body) = opening {
+                let send = self.prepare(&epoch, id, body.clone()).and_then(|prepared| {
+                    epoch
+                        .with_active(|| prepared.publish())
+                        .unwrap_or(Err(PayloadSendError::StaleEpoch))
+                });
+                send.map_err(|error| format!("configuration payload {}: {error:?}", id.0))?;
+            }
+        }
+        Ok(())
     }
     /// A failure closes this physical connection only; a client reason joins its ordered events.
     pub fn disconnect(&self, reason: Text) {

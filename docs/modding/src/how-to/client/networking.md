@@ -71,6 +71,39 @@ fn register(r: &mut dyn Registrar) {
   handler does not run. A handler that panics is disabled: its transaction rolls back, nothing it
   staged is sent, the session closes, and it is not called again.
 
+## Raw client configuration messages
+
+A native or WASM client mod can send an ordinary Minecraft plugin message as
+soon as configuration starts. Declare the exact channel in `Hooks::register`.
+For example, this declaration sends four bytes on each connection, including
+when a proxy puts the client back into configuration:
+
+```rust,ignore
+fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+    r.payload_handlers().registrar("1").configuration_raw(
+        PayloadId("example:configuration".into()),
+        Some(PayloadBytes(vec![0, 1, 128, 255])),
+    );
+}
+```
+
+The server reads the channel followed by the exact body. It can wait for the
+message before it sends FinishConfiguration. The opening message is sent to
+every server this mod joins. Use `None` to declare a channel without an automatic
+send, or `Some(PayloadBytes(vec![]))` to send an empty message. During an active
+configuration, `ClientHost::send_payload_to_server` can send additional bodies.
+A tick can miss a short configuration phase, so use the opening message for a
+version announcement. A successful runtime send reports local acceptance.
+Disconnect, a replaced epoch, a saturated writer, and a send in play can each
+refuse the operation.
+
+A raw configuration body can contain up to 32,767 bytes. Invalid ids, reserved
+`minecraft:` and `horizon:` channels, collisions with negotiated declarations,
+and oversized opening messages refuse mod loading. An oversized runtime send
+returns `PayloadTooLarge`. The channel is absent from the Horizon manifest and
+uses vanilla's unregistered payload codec limits. The registrar's version,
+optional setting and receiving thread do not apply to this send-only channel.
+
 ## Raw play packets
 
 On the server, `host.player_send_packet(player, ClientboundPlayPacket::new(id, body))` sends one clientbound play packet to one player as it is: `body` is the vanilla packet body, without the packet id, length prefix or compression framing. The body must decode whole as the named packet, or the call returns `Result<(), SendPacketError>` with `InvalidBody` and nothing is sent. `UnknownPacket` names a packet that is not clientbound play, `PayloadTooLarge` a custom payload past vanilla's limit, and `NotConnected` a stale, offline or fake player and any call from a client. Nothing on the server changes; a custom payload on a `horizon:` channel is refused.

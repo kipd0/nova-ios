@@ -54,6 +54,17 @@ Unnegotiated owned ids and malformed registered payloads fail the session with n
 errors. Unrelated vanilla and plugin channels retain their existing behavior.
 Generic packet sending cannot bypass the registered-channel checks.
 
+### Talking to a configuration plugin
+
+A client installation with a `configuration_raw` channel opens a configuration
+epoch with an empty peer table after the login or reconfiguration acknowledgement.
+Only locally declared raw configuration channels can send before an offer.
+Opening bodies publish in registration order on the existing bounded writer,
+under the epoch publication guard, before the reader waits for its first packet.
+Offer acceptance replaces that epoch. FinishConfiguration still runs the ordinary
+missing-offer and required-channel checks, then installs the play table. Raw
+configuration declarations add neither manifest entries nor decoder exemptions.
+
 ## Limits are codec- and connection-aware
 
 The unknown-id discard fallback retains vanilla's 32,767 serverbound and 1,048,576
@@ -135,3 +146,37 @@ This keeps dispatch in CONFIGURATION on `horizon-lan-conn`, before the Play I/O 
 the existing guest-entry `check_current()` rejects a default-stack connection thread
 instead of producing the expected replies. Its isolated child uses fresh game and
 launcher homes and a scratch game directory/current working directory.
+
+### Reproducing the configuration send
+
+The native regression uses a real TCP connection. Its peer waits for the opening
+message before sending anything and checks the configuration finish acknowledgement
+after the messages. To run it:
+
+```sh
+cargo test -p horizon-client-lib --no-default-features --lib net::configuration_raw_tests::native_configuration_raw_precedes_play_without_offer -- --exact
+```
+
+For the guest case, build the shared standard library and fixture from this checkout
+using the commands in [Native mods](../native-mods.md#portable-contract-regression).
+Set `HORIZON_WASM_STD` and `HORIZON_WASM_FIXTURE` to their absolute paths and run:
+
+```sh
+cargo test -p horizon-client-lib --no-default-features --lib net::configuration_raw_tests::wasm_configuration_raw_precedes_play_without_offer -- --ignored --exact
+```
+
+To check Paper interoperability with a prepared 26.3 client and Paper server:
+
+1. In a client mod, use the four-byte `example:configuration` declaration from
+   [Client networking](../modding/src/how-to/client/networking.md#raw-client-configuration-messages).
+   Build the client mod against this checkout.
+2. In a Paper test plugin's `onEnable`, call
+   `getServer().getMessenger().registerIncomingPluginChannel(this, "example:configuration", listener)`.
+   Implement both overloads of `PluginMessageListener.onPluginMessageReceived`.
+   In the `(String, PlayerConnection, byte[])` overload, log the channel,
+   `connection instanceof PlayerConfigurationConnection`, and
+   `HexFormat.of().formatHex(message)`. Both connection types are in
+   `io.papermc.paper.connection`. The older `Player` overload alone only observes play.
+3. Join with the native mod, then repeat with its WASM build. Each join should log
+   `example:configuration true 000180ff` before the player joins play. Repeat with
+   the mod disabled and verify that joining succeeds with no such log entry.

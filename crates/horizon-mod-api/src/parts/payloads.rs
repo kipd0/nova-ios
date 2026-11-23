@@ -61,6 +61,16 @@ impl PartRegistrar {
                         owners.join(", ")
                     ));
                 }
+                if let Some(raw) = payloads
+                    .configuration_raw
+                    .iter()
+                    .find(|entry| entry.id == declaration.id)
+                {
+                    return Err(format!(
+                        "it collides with the raw configuration channel declared by {}",
+                        raw.owner
+                    ));
+                }
                 for &index in indices(declaration.protocol) {
                     if let Some(owner) = payloads.phases[index].get(&declaration.id.0) {
                         return Err(format!(
@@ -134,6 +144,29 @@ impl PartRegistrar {
             );
         }
         slot
+    }
+
+    fn validate_raw_channel(&self, id: &PayloadId) -> Result<(), String> {
+        let parsed = Identifier::parse_namespaced(&id.0)
+            .ok_or_else(|| "a raw channel needs an exact namespaced id".to_owned())?;
+        if RESERVED_RAW_NAMESPACES.contains(&parsed.namespace()) {
+            return Err(format!(
+                "the {:?} namespace belongs to the engine",
+                parsed.namespace()
+            ));
+        }
+        let Some(payloads) = &self.parts.payloads else {
+            return Ok(());
+        };
+        for phase in &payloads.phases {
+            if let Some(typed) = phase.get(&id.0) {
+                return Err(format!(
+                    "it collides with the typed payload registered by {}",
+                    typed.owner
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// This load's payload table, made on first use: the one place a table is created, so
@@ -237,27 +270,46 @@ impl PayloadsRegistrar for PartRegistrar {
         }
     }
 
-    fn add_raw_payload(&mut self, id: PayloadId, server: Option<Arc<dyn IPayloadHandler>>) {
-        let refused = (|| {
-            let parsed = Identifier::parse_namespaced(&id.0)
-                .ok_or_else(|| "a raw channel needs an exact namespaced id".to_owned())?;
-            if RESERVED_RAW_NAMESPACES.contains(&parsed.namespace()) {
-                return Err(format!(
-                    "the {:?} namespace belongs to the engine",
-                    parsed.namespace()
-                ));
+    fn add_configuration_raw(&mut self, id: PayloadId, opening: Option<crate::PayloadBytes>) {
+        let validation = self.validate_raw_channel(&id).and_then(|()| {
+            // Both Minecraft string and serverbound discard limits are 32,767.
+            // Valid ids are ASCII, so their byte and UTF-16 lengths coincide.
+            if id.0.len() > 32_767 {
+                return Err("channel exceeds Minecraft's string limit".into());
             }
+            if opening.as_ref().is_some_and(|bytes| bytes.0.len() > 32_767) {
+                return Err("opening payload exceeds the 32767-byte serverbound limit".into());
+            }
+            if self.parts.payloads.as_ref().is_some_and(|p| {
+                p.configuration_raw
+                    .iter()
+                    .any(|entry| entry.id == id && entry.owner == self.mod_id)
+            }) {
+                return Err("it is already declared by this mod".into());
+            }
+            Ok(())
+        });
+        if let Err(reason) = validation {
+            self.refused.push(format!(
+                "{} declared raw configuration channel {}: {reason}",
+                self.mod_id, id.0
+            ));
+            return;
+        }
+        let entry = RawConfiguration {
+            id,
+            owner: self.mod_id,
+            owner_index: self.mod_index,
+            opening,
+        };
+        self.payloads_table().configuration_raw.push(entry);
+    }
+
+    fn add_raw_payload(&mut self, id: PayloadId, server: Option<Arc<dyn IPayloadHandler>>) {
+        let refused = self.validate_raw_channel(&id).and_then(|()| {
             let Some(payloads) = &self.parts.payloads else {
                 return Ok(());
             };
-            for phase in &payloads.phases {
-                if let Some(typed) = phase.get(&id.0) {
-                    return Err(format!(
-                        "it collides with the typed payload registered by {}",
-                        typed.owner
-                    ));
-                }
-            }
             if payloads
                 .raw
                 .get(&id.0)
@@ -266,7 +318,7 @@ impl PayloadsRegistrar for PartRegistrar {
                 return Err("it is already declared by this mod".to_owned());
             }
             Ok(())
-        })();
+        });
         if let Err(reason) = refused {
             self.refused.push(format!(
                 "{} declared raw channel {}: {reason}",

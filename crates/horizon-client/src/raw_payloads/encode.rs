@@ -5,7 +5,10 @@ use mod_api::{PayloadBytes, PayloadId};
 /// Encode vanilla packet id + declared channel + exact body, with no mod envelope.
 /// Call only after resolving the declaration against the connection's frozen table.
 pub fn encode(phase: Phase, side: Side, id: &PayloadId, bytes: PayloadBytes) -> Vec<u8> {
-    let packet = packet_id(phase, side);
+    with_packet_id(packet_id(phase, side), id, bytes)
+}
+
+pub(super) fn with_packet_id(packet: i32, id: &PayloadId, bytes: PayloadBytes) -> Vec<u8> {
     let mut body = Writer::new();
     body.varint(packet);
     body.string(&id.0);
