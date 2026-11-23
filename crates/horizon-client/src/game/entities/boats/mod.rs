@@ -396,18 +396,17 @@ impl Game<'_> {
             b.fall_distance = 0.0;
         }
         let mut physics = physics::vanilla(&b);
-        if let Some(keys) = rider
+        let custom_movement = if let Some(keys) = rider
             && mod_api::__private::listened(mod_api::HookId::ControlledBoatPhysics)
         {
             let vanilla = physics;
             self.native_controlled_boat_physics(&physics::control(&b, keys.jump), &mut physics);
             physics::validate(&mut physics, vanilla);
-        }
-        let obstacles = if physics.collide_entities {
-            self.boat_move_obstacles(&b)
+            physics != vanilla
         } else {
-            Vec::new()
+            false
         };
+        let vanilla_obstacles = (!custom_movement).then(|| self.boat_move_obstacles(&b));
         let mut scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -486,12 +485,24 @@ impl Game<'_> {
         // among them (`CollisionGetter.borderCollision`). The boat's own move
         // is a self move (arismoko/horizon#2414: vanilla's `AbstractBoat.tick` passes SELF);
         // PR 1a records the movement unchanged.
+        let movement = b.take_movement();
+        let obstacles = vanilla_obstacles.unwrap_or_else(|| {
+            if !physics.collide_entities {
+                return Vec::new();
+            }
+            // Include the whole modded sweep and space above it for stepping.
+            let area = horizon_core::geometry::entity_collision_bounds(
+                movement,
+                b.bounds(),
+                physics.step_height,
+            );
+            self.boat_obstacles(b.id, area)
+        });
         let mut scene = EntityCollisions {
             blocks: scene,
             entities: &obstacles,
             border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
-        let movement = b.take_movement();
         let mut gate = horizon_client::move_gate::armed_with(
             &self.loop_context,
             b.id,

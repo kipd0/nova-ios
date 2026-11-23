@@ -26,13 +26,7 @@ pub(super) fn vanilla(b: &Boat) -> BoatPhysics {
         gravity,
         drag,
         buoyancy,
-        turn: 1.0,
-        forward: 0.04,
-        backward: 0.005,
-        paddle_turn: 0.005,
-        vertical_impulse: 0.0,
-        step_height: 0.0,
-        collide_entities: true,
+        ..BoatPhysics::default()
     }
 }
 

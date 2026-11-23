@@ -2,7 +2,7 @@
 use horizon_mod_api_macros::Wire;
 
 /// The medium sampled under or around the hull before floating and steering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Wire)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Wire)]
 #[non_exhaustive]
 pub enum BoatMedium {
     /// Resting on solid collision shapes.
@@ -14,11 +14,12 @@ pub enum BoatMedium {
     /// Submerged in flowing water.
     UnderFlowingWater,
     /// Neither touching land nor in water.
+    #[default]
     Air,
 }
 
 /// Snapshot after fluid currents, before drag, steering and collision resolution.
-#[derive(Clone, Copy, Debug, PartialEq, Wire)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Wire)]
 // exhaustive: constructed by the game across the crate boundary
 pub struct BoatControl {
     /// Connection-local entity ID. Clear per-entity settings on removal or disconnect.
@@ -63,4 +64,22 @@ pub struct BoatPhysics {
     pub step_height: f32,
     /// Include other entities in the hull's movement collision query.
     pub collide_entities: bool,
+}
+
+impl Default for BoatPhysics {
+    /// Vanilla controls for a boat in air with normal gravity.
+    fn default() -> Self {
+        Self {
+            gravity: 0.04,
+            drag: 0.9,
+            buoyancy: 0.0,
+            turn: 1.0,
+            forward: 0.04,
+            backward: 0.005,
+            paddle_turn: 0.005,
+            vertical_impulse: 0.0,
+            step_height: 0.0,
+            collide_entities: true,
+        }
+    }
 }

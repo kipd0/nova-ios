@@ -127,6 +127,26 @@ fn real_member() {
             // This harness now owns a live world, just like the engine thread that
             // invokes these gameplay hooks. Loading and registration above run in Packages.
             let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
+            let driver = mod_api::BoatControl {
+                entity: 30441,
+                medium: mod_api::BoatMedium::Land,
+                on_ground: true,
+                position: [5.5, 100.0, 5.2],
+                velocity: [0.0, 0.0, 0.35],
+                yaw: 0.0,
+                paddles: [false, true, true, false],
+                jump: false,
+            };
+            let mut physics = mod_api::BoatPhysics {
+                drag: 0.6,
+                ..Default::default()
+            };
+            mod_api::dispatch_controlled_boat_physics(&Quiet, &driver, &mut physics);
+            assert_eq!(
+                (physics.step_height, physics.turn, physics.forward),
+                (1.25, 3.0, 0.25)
+            );
+            assert_eq!(physics.drag, 0.6);
             // Independent expected values cross the actual wasm guest boundary. Game packet
             // and observer behavior must be checked at the higher client layer, not by Quiet.
             for key in [
