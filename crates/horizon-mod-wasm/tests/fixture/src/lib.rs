@@ -12,14 +12,6 @@ pub struct Mod;
 
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
-    fn controlled_boat_physics(
-        &self,
-        _: &dyn mod_api::ClientHost,
-        event: &mut mod_api::ControlledBoatPhysicsEvent<'_>,
-    ) {
-        boat::physics(event);
-    }
-
     fn entity_interact(
         &self,
         host: mod_api::HostSide<'_>,

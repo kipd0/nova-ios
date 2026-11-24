@@ -7,9 +7,6 @@ mod below_world;
 mod friction_tests;
 #[cfg(test)]
 mod lifetime_tests;
-mod physics;
-#[cfg(test)]
-mod physics_tests;
 mod placement;
 pub(super) use placement::OutlineFluidRay;
 
@@ -18,6 +15,7 @@ pub(super) use horizon_gameplay::boats::*;
 
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
 use horizon_client::actions::Action;
+use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -362,9 +360,8 @@ impl Game<'_> {
         }
         b.fall_distance
     }
-    /// `AbstractBoat.tick` for one boat (the driver supplies current rider input).
-    pub(super) fn tick_boat(&mut self, mut b: Boat, rider: Option<super::Keys>) -> Boat {
-        let controlled = rider.is_some();
+    /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
+    pub(super) fn tick_boat(&mut self, mut b: Boat, controlled: bool) -> Boat {
         b.previous = b.position;
         b.previous_yaw = b.yaw;
         // Entity.baseTick ends with Leashable.tickLeash, on a server only
@@ -398,18 +395,12 @@ impl Game<'_> {
         {
             b.fall_distance = 0.0;
         }
-        let mut physics = physics::vanilla(&b);
-        let custom_movement = if let Some(keys) = rider
-            && mod_api::__private::listened(mod_api::HookId::ControlledBoatPhysics)
-        {
-            let vanilla = physics;
-            self.native_controlled_boat_physics(&physics::control(&b, keys.jump), &mut physics);
-            physics::validate(&mut physics, vanilla);
-            physics != vanilla
-        } else {
-            false
-        };
-        let vanilla_obstacles = (!custom_movement).then(|| self.boat_move_obstacles(&b));
+        // floatBoat
+        // `-getGravity()`: none with NoGravity.
+        let mut vspeed = 0.0 - b.get_gravity();
+        let mut buoyancy = 0.0;
+        let inv_friction: f32;
+        let obstacles = self.boat_move_obstacles(&b);
         let mut scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -442,42 +433,53 @@ impl Game<'_> {
             }
             b.status = Status::InWater;
         } else {
-            if b.status == Status::OnLand && controlled {
-                b.land_friction /= 2.0;
+            match b.status {
+                Status::InWater => {
+                    buoyancy = (b.water_level - b.position.y) / HEIGHT;
+                    inv_friction = 0.9;
+                }
+                Status::UnderFlowingWater => {
+                    vspeed = -7.0e-4;
+                    inv_friction = 0.9;
+                }
+                Status::UnderWater => {
+                    buoyancy = f64::from(0.01_f32);
+                    inv_friction = 0.45;
+                }
+                Status::InAir => inv_friction = 0.9,
+                Status::OnLand => {
+                    inv_friction = b.land_friction;
+                    if controlled {
+                        b.land_friction /= 2.0;
+                    }
+                }
             }
-            let f = f64::from(physics.drag);
-            b.velocity = Vec3::new(
-                b.velocity.x * f,
-                b.velocity.y + (0.0 - physics.gravity),
-                b.velocity.z * f,
-            );
-            b.delta_rotation *= physics.drag;
-            if physics.buoyancy > 0.0 {
-                b.velocity.y = (b.velocity.y + physics.buoyancy * (0.04 / 0.65)) * 0.75;
+            let f = f64::from(inv_friction);
+            b.velocity = Vec3::new(b.velocity.x * f, b.velocity.y + vspeed, b.velocity.z * f);
+            b.delta_rotation *= inv_friction;
+            if buoyancy > 0.0 {
+                b.velocity.y = (b.velocity.y + buoyancy * (0.04 / 0.65)) * 0.75;
             }
-        }
-        if physics.vertical_impulse != 0.0 {
-            b.velocity.y += physics.vertical_impulse;
         }
         // controlBoat
         if controlled {
             let [left, right, up, down] = b.input;
             let mut acceleration = 0.0f32;
             if left {
-                b.delta_rotation -= physics.turn;
+                b.delta_rotation -= 1.0;
             }
             if right {
-                b.delta_rotation += physics.turn;
+                b.delta_rotation += 1.0;
             }
             if right != left && !up && !down {
-                acceleration += physics.paddle_turn;
+                acceleration += 0.005;
             }
             b.yaw += b.delta_rotation;
             if up {
-                acceleration += physics.forward;
+                acceleration += 0.04;
             }
             if down {
-                acceleration -= physics.backward;
+                acceleration -= 0.005;
             }
             let (x, z) = paddle_push(b.yaw, acceleration);
             b.velocity.x += x;
@@ -488,24 +490,12 @@ impl Game<'_> {
         // among them (`CollisionGetter.borderCollision`). The boat's own move
         // is a self move (arismoko/horizon#2414: vanilla's `AbstractBoat.tick` passes SELF);
         // PR 1a records the movement unchanged.
-        let movement = b.take_movement();
-        let obstacles = vanilla_obstacles.unwrap_or_else(|| {
-            if !physics.collide_entities {
-                return Vec::new();
-            }
-            // Include the whole modded sweep and space above it for stepping.
-            let area = horizon_core::geometry::entity_collision_bounds(
-                movement,
-                b.bounds(),
-                physics.step_height,
-            );
-            self.boat_obstacles(b.id, area)
-        });
         let mut scene = EntityCollisions {
             blocks: scene,
             entities: &obstacles,
             border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
+        let movement = b.take_movement();
         let mut gate = horizon_client::move_gate::armed_with(
             &self.loop_context,
             b.id,
@@ -519,7 +509,7 @@ impl Game<'_> {
             &mut scene,
             b.bounds(),
             movement,
-            physics.step_height,
+            0.0,
             b.on_ground,
         ) {
             b.fall_distance = self.vehicle_fall_reset(b.fall_distance, b.position, moved);
@@ -671,7 +661,7 @@ impl Game<'_> {
                     let section_step = self.with_entity_held_out(id, |game| {
                         let b = game.boats[i].clone();
                         let from = b.position;
-                        let b = game.tick_boat(b, None);
+                        let b = game.tick_boat(b, false);
                         let to = b.position;
                         game.store_boat_back(i, b).then_some((from, to))
                     });
@@ -1857,7 +1847,7 @@ mod tests {
             let mut b = boat();
             b.position = Vec3::new(1.5, 200.2, 1.5);
             b.velocity.y = -0.6;
-            let b = game.tick_boat(b, None);
+            let b = game.tick_boat(b, false);
             assert_eq!(b.position.y, 200.0, "the fall clips on the floor");
             assert_eq!(b.velocity.y, 0.0, "and the collision zeroes it");
             // The source at y=201 has air above: 201 + 8/9.
@@ -2150,13 +2140,13 @@ mod cobweb_tests {
         };
         let (mut in_web, mut outside) = (boat(8.5), boat(12.5));
         // The tick in the web sets the multiplier and resets the fall.
-        in_web = game.tick_boat(in_web, None);
-        outside = game.tick_boat(outside, None);
+        in_web = game.tick_boat(in_web, false);
+        outside = game.tick_boat(outside, false);
         let (web_fall, free_fall) = (in_web.fall_distance, outside.fall_distance);
         // The next move spends the multiplier.
         let (web_from, free_from) = (in_web.position, outside.position);
-        in_web = game.tick_boat(in_web, None);
-        outside = game.tick_boat(outside, None);
+        in_web = game.tick_boat(in_web, false);
+        outside = game.tick_boat(outside, false);
         let (web_moved, free_moved) = (
             in_web.position.subtract(web_from),
             outside.position.subtract(free_from),
@@ -2212,13 +2202,13 @@ mod cobweb_tests {
         let mut boat = Boat::new(1, Arc::from("oak"), Vec3::new(8.5, 64.0, 8.5), 0.0);
         // Far enough in one move to leave the cobweb's cell and reach the snow's.
         boat.velocity = Vec3::new(2.0, 0.0, 0.0);
-        boat = game.tick_boat(boat, None);
+        boat = game.tick_boat(boat, false);
         // The same boat without the stored multiplier: the next move is the full one.
         let mut free = boat.clone();
         free.stuck = Vec3::ZERO;
         let (from, free_from) = (boat.position, free.position);
-        boat = game.tick_boat(boat, None);
-        free = game.tick_boat(free, None);
+        boat = game.tick_boat(boat, false);
+        free = game.tick_boat(free, false);
         let (moved, free_moved) = (
             boat.position.subtract(from),
             free.position.subtract(free_from),
