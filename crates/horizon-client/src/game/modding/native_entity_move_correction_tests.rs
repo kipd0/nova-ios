@@ -321,6 +321,46 @@ fn a_replacement_equal_to_the_request_sends_no_correction() {
     );
 }
 
+/// Replay the client course's actual packet with the same floor and ledge on a mod-free server.
+pub(in crate::game) fn accept_ledge_packet(
+    packet: horizon_protocol::packets::play::MoveVehicleRequest,
+) {
+    hosted_guest_starting(
+        "boat-ledge",
+        [5.5, 100.0, 5.2],
+        SURVIVAL,
+        true,
+        Vec::new().into(),
+        |game, rx, _| {
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            for x in 4..8 {
+                for z in 6..9 {
+                    game.world.set(x, 100, z, stone).unwrap();
+                }
+            }
+            let position = packet.position;
+            let yaw = packet.yaw;
+            game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+                g.inbox
+                    .push_back(InboxItem::Packet(S::MoveVehicle(packet), None));
+            });
+            game.tick_lan_packets();
+            let boat = &game.boats[0];
+            assert_eq!(
+                [boat.position.x, boat.position.y, boat.position.z],
+                position
+            );
+            assert_eq!(boat.yaw, yaw);
+            assert!(!vehicle_put_back(game, &rx));
+        },
+    );
+}
+
 /// A small step with no listener: vanilla's own check, no correction — the
 /// fix must not correct ordinary walking.
 #[test]

@@ -29,6 +29,8 @@ pub struct Payloads {
     pub(crate) phases: [HashMap<String, Registered>; 2],
     /// Raw play channels by exact id, each with its declaring mods in load order.
     pub(crate) raw: HashMap<String, Vec<RawRegistered>>,
+    /// Client configuration sends in registration order, shared across connections.
+    pub(crate) configuration_raw: Vec<RawConfiguration>,
     /// Typed declarations by the slot their tokens carry, in registration order.
     pub(crate) typed: Vec<TypedSlot>,
     /// The load these declarations belong to, never 0 (a refused registration's); tokens of
@@ -44,6 +46,14 @@ pub(crate) struct TypedSlot {
     pub(crate) direction: PayloadDirection,
     pub(crate) schema: u64,
     pub(crate) owner_index: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct RawConfiguration {
+    pub(crate) id: PayloadId,
+    pub(crate) owner: &'static str,
+    pub(crate) owner_index: usize,
+    pub(crate) opening: Option<crate::PayloadBytes>,
 }
 
 #[derive(Clone)]
@@ -179,6 +189,17 @@ impl Payloads {
             Err(PayloadSendError::StaleToken(token.id.clone()))
         }
     }
+    /// Enabled client configuration channels and their optional opening messages,
+    /// in mod registration order. None of these are included in declarations().
+    pub fn configuration_raw_channels(
+        &self,
+    ) -> impl Iterator<Item = (&PayloadId, Option<&crate::PayloadBytes>)> {
+        self.configuration_raw
+            .iter()
+            .filter(|entry| crate::mod_index_on(entry.owner_index))
+            .map(|entry| (&entry.id, entry.opening.as_ref()))
+    }
+
     /// The raw play channels an enabled mod declared, by exact id.
     pub fn raw_channels(&self) -> impl Iterator<Item = &str> {
         self.raw
@@ -283,6 +304,9 @@ pub trait PayloadsRegistrar {
         server: Option<Arc<dyn IPayloadHandler>>,
         client: Option<Arc<dyn IPayloadHandler>>,
     ) -> PayloadToken;
+    /// Declare a client configuration channel and optional first message. Invalid
+    /// ids, duplicate declarations by one owner and negotiated collisions refuse load.
+    fn add_configuration_raw(&mut self, id: PayloadId, opening: Option<crate::PayloadBytes>);
     /// Declare a raw play channel by exact id, with an optional server receiver.
     /// Reserved namespaces, a second declaration by the same mod and an id a
     /// typed payload uses refuse startup, naming the mods involved.

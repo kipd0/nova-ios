@@ -3,18 +3,8 @@
 #![allow(clippy::all, unused_comparisons, unreachable_patterns, dead_code)]
 #[path = "fixture/src/lending.rs"]
 mod lending;
-#[path = "fixture/src/matrix.rs"]
-mod matrix;
-#[path = "support/checks.rs"]
-mod matrix_checks;
 #[path = "support/no_hooks.rs"]
 mod no_hooks;
-#[path = "fixture/src/replace.rs"]
-mod replace;
-#[path = "fixture/src/shutdown.rs"]
-mod shutdown;
-#[path = "fixture/src/turn.rs"]
-mod turn;
 use horizon_mod_package::manifest::Package;
 use horizon_mod_wasm::{WasmPackage, load};
 
@@ -103,7 +93,6 @@ fn real_member() {
             );
         };
         mod_api::__private::initialize().unwrap();
-        matrix_checks::baseline();
         let path = std::path::Path::new(&fixture);
         let manifest = Package::read(path).unwrap().manifest;
         let info = mod_api::PackageInfo::new(
@@ -114,20 +103,14 @@ fn real_member() {
             vec![manifest.id.clone()],
             Vec::new(),
         );
-        let mut package = WasmPackage {
+        let package = WasmPackage {
             manifest,
             module: Package::read_wasm(path).unwrap(),
         };
-        if !mod_points::STAGED {
-            package.manifest.inject.clear();
-        }
-        // The no-points variant uses the same guest code, hook subscriptions and Parts.
         let loaded = load(&std::fs::read(std).unwrap(), vec![package]);
         assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
         assert_eq!(loaded.mods.len(), 1);
-        loaded
-            .initialize(&[info])
-            .expect("guest initialization and point registration");
+        loaded.initialize(&[info]).expect("guest initialization");
         mod_api::testing::with_mods(loaded.mods.into(), || {
             mod_api::__private::install_parts(
                 mod_api::__private::mods(),
@@ -144,6 +127,26 @@ fn real_member() {
             // This harness now owns a live world, just like the engine thread that
             // invokes these gameplay hooks. Loading and registration above run in Packages.
             let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
+            let driver = mod_api::BoatControl {
+                entity: 30441,
+                medium: mod_api::BoatMedium::Land,
+                on_ground: true,
+                position: [5.5, 100.0, 5.2],
+                velocity: [0.0, 0.0, 0.35],
+                yaw: 0.0,
+                paddles: [false, true, true, false],
+                jump: false,
+            };
+            let mut physics = mod_api::BoatPhysics {
+                drag: 0.6,
+                ..Default::default()
+            };
+            mod_api::dispatch_controlled_boat_physics(&Quiet, &driver, &mut physics);
+            assert_eq!(
+                (physics.step_height, physics.turn, physics.forward),
+                (1.25, 3.0, 0.25)
+            );
+            assert_eq!(physics.drag, 0.6);
             // Independent expected values cross the actual wasm guest boundary. Game packet
             // and observer behavior must be checked at the higher client layer, not by Quiet.
             for key in [
@@ -224,7 +227,12 @@ fn real_member() {
                 &mut entity,
             );
             assert_eq!(entity.data, [23]);
-            mod_api::__private::resolve_items(["minecraft:snowball", "minecraft:bow"]).unwrap();
+            mod_api::__private::resolve_items([
+                "minecraft:snowball",
+                "minecraft:bow",
+                "minecraft:paper",
+            ])
+            .unwrap();
             lending::check_death(
                 &mut Quiet,
                 mod_api::__private::item_key("minecraft:bow").unwrap(),
@@ -317,121 +325,7 @@ fn real_member() {
                 );
             }
         });
-        if !mod_points::STAGED {
-            return;
-        }
-        mod_points::__private::seal();
-        __pointa_wrap_degrees();
-        __pointa_average();
-        __pointa_remember_shutdown();
-        matrix_checks::check();
-        let mut args = mod_points::TickArgs::__new();
-        horizon_engine_slots::dispatch::tick(mod_api::HostSide::Server(&mut Quiet), &mut args);
-        assert!(
-            args.cancel,
-            "real wasm listener must modify the point record"
-        );
-        // The real point's expansion: its `&mut` place copied in and out of the wasm listener's
-        // record, its by-value message changed, and its cancel skipping the body.
-        // The guest built `shutdown::on_shutdown`, the source `native_listener` registers natively.
-        let _: mod_points::listeners::GameServerLifecycleRememberShutdownListener =
-            shutdown::on_shutdown;
-        for (before, message, after) in shutdown::CASES {
-            let mut failure = before.map(String::from);
-            remember_shutdown(&mut failure, message.into());
-            assert_eq!(failure.as_deref(), after, "{message}");
-        }
-        // The guest's `replace` (`replace::own_average`, emitted through `mod_points::replace!`):
-        // its value reaches the caller across the boundary, and the body never runs.
-        let _: fn(&mut mod_points::GameBeaconAverageArgs) -> u32 = replace::own_average;
-        for (a, b, value) in replace::CASES {
-            assert_eq!(average(a, b), value, "{a} {b}");
-        }
-        // The guest's head listener (`turn::turn_angle`): the body runs with its argument.
-        let _: mod_points::listeners::GameCommandsWrapDegreesListener = turn::turn_angle;
-        for (angle, wrapped) in turn::CASES {
-            assert_eq!(wrap_degrees(angle), wrapped, "{angle}");
-        }
     })
-}
-
-/// `horizon_client::game::commands::wrap_degrees` (`Mth.wrapDegrees`), as the staging pass
-/// marks it.
-#[horizon_mod_api_macros::point(slot = 0, name = "game_commands_wrap_degrees", free)]
-fn wrap_degrees(angle: f32) -> f32 {
-    let wrapped = angle % 360.0;
-    if wrapped >= 180.0 {
-        wrapped - 360.0
-    } else if wrapped < -180.0 {
-        wrapped + 360.0
-    } else {
-        wrapped
-    }
-}
-
-/// `horizon_client::game::beacon::average`, as the staging pass marks it.
-#[horizon_mod_api_macros::point(slot = 2, name = "game_beacon_average", free)]
-fn average(a: u32, b: u32) -> u32 {
-    panic!("a replaced body ran: {a} {b}")
-}
-
-/// `horizon_client::game::server_lifecycle::remember_shutdown`, as the staging pass marks it.
-#[horizon_mod_api_macros::point(slot = 4, name = "game_server_lifecycle_remember_shutdown", free)]
-fn remember_shutdown(failure: &mut Option<String>, message: String) {
-    if failure.is_none() {
-        *failure = Some(message);
-    }
-}
-
-static __REPLACE: [std::sync::atomic::AtomicPtr<()>; 8] =
-    [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 8];
-fn __fnr_read_slot_0() -> Option<fn(f32) -> f32> {
-    let pointer = crate::__REPLACE[0].load(std::sync::atomic::Ordering::Relaxed);
-    if pointer.is_null() {
-        None
-    } else {
-        Some(unsafe { std::mem::transmute::<*mut (), fn(f32) -> f32>(pointer) })
-    }
-}
-fn __fnr_read_body_0() -> Option<fn(f32) -> f32> {
-    let pointer = crate::__REPLACE[1].load(std::sync::atomic::Ordering::Relaxed);
-    if pointer.is_null() {
-        None
-    } else {
-        Some(unsafe { std::mem::transmute::<*mut (), fn(f32) -> f32>(pointer) })
-    }
-}
-fn __fnr_read_slot_2() -> Option<fn(u32, u32) -> u32> {
-    let pointer = crate::__REPLACE[2].load(std::sync::atomic::Ordering::Relaxed);
-    if pointer.is_null() {
-        None
-    } else {
-        Some(unsafe { std::mem::transmute::<*mut (), fn(u32, u32) -> u32>(pointer) })
-    }
-}
-fn __fnr_read_body_2() -> Option<fn(u32, u32) -> u32> {
-    let pointer = crate::__REPLACE[3].load(std::sync::atomic::Ordering::Relaxed);
-    if pointer.is_null() {
-        None
-    } else {
-        Some(unsafe { std::mem::transmute::<*mut (), fn(u32, u32) -> u32>(pointer) })
-    }
-}
-fn __fnr_read_slot_4() -> Option<fn(&mut Option<String>, String)> {
-    let pointer = crate::__REPLACE[4].load(std::sync::atomic::Ordering::Relaxed);
-    if pointer.is_null() {
-        None
-    } else {
-        Some(unsafe { std::mem::transmute::<*mut (), fn(&mut Option<String>, String)>(pointer) })
-    }
-}
-fn __fnr_read_body_4() -> Option<fn(&mut Option<String>, String)> {
-    let pointer = crate::__REPLACE[5].load(std::sync::atomic::Ordering::Relaxed);
-    if pointer.is_null() {
-        None
-    } else {
-        Some(unsafe { std::mem::transmute::<*mut (), fn(&mut Option<String>, String)>(pointer) })
-    }
 }
 
 #[path = "../src/test_stack.rs"]

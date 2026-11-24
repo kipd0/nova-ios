@@ -6,16 +6,20 @@ static ENTITY_POST_CALLS: AtomicU32 = AtomicU32::new(0);
 
 // Generated in filename order by build.rs; a new guest registration needs only its own file.
 include!(concat!(env!("OUT_DIR"), "/wasm_fixture_modules.rs"));
-pub use matrix::{mirrors, sum_return};
-pub use replace::own_average;
-pub use shutdown::on_shutdown;
-pub use turn::turn_angle;
 
 #[derive(Default)]
 pub struct Mod;
 
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn controlled_boat_physics(
+        &self,
+        _: &dyn mod_api::ClientHost,
+        event: &mut mod_api::ControlledBoatPhysicsEvent<'_>,
+    ) {
+        boat::physics(event);
+    }
+
     fn entity_interact(
         &self,
         host: mod_api::HostSide<'_>,
@@ -282,6 +286,16 @@ impl Hooks for Mod {
     }
 
     fn register(&self, registrar: &mut dyn mod_api::Registrar, cx: &mod_api::RegistrationContext) {
+        if cx.mods().get("raw_configuration_probe").is_some() {
+            registrar
+                .payload_handlers()
+                .registrar("1")
+                .configuration_raw(
+                    mod_api::PayloadId("example:configuration".into()),
+                    Some(mod_api::PayloadBytes(vec![0, 1, 128, 255])),
+                );
+            return;
+        }
         block_state_notice::register(registrar, cx);
         runtime_environment::register(cx);
         capability_registration::register(registrar, cx);
@@ -334,12 +348,6 @@ impl Hooks for Mod {
             .build();
         registrar.block_entity_part(&reads, CounterReads).unwrap();
     }
-}
-
-// Only the guest ABI exports reach this fixture function; the bench target does not call it.
-#[allow(dead_code)]
-pub fn on_tick(_: mod_api::HostSide<'_>, args: &mut mod_points::TickArgs) {
-    args.cancel = true;
 }
 
 pub struct Counter;

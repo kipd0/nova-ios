@@ -43,6 +43,9 @@ pub enum CallClass {
 
 /// A group's linear memory when none of its mods declares one (`wasm_memory_mib`): 1 GiB.
 pub(crate) const DEFAULT_GROUP_MEMORY_MIB: u32 = 1024;
+/// What the host copies of a guest's log line, length prefix included: the rest is dropped, so a
+/// guest cannot make the host copy and log its whole memory.
+const MAX_LOG_INPUT: usize = 4 + 4096;
 /// The function table's ceiling: references, a pointer each.
 const TABLE_ELEMENTS: usize = 1 << 20;
 
@@ -173,12 +176,27 @@ pub(crate) fn test_engine() -> Engine {
     Engine::new(without_threads(&mut wasmtime::Config::new())).unwrap()
 }
 
+/// iOS may refuse Wasmtime's default 4 GiB virtual reservation for a second
+/// independent mod group. Reserve less address space up front and allow
+/// relocation on growth; the existing per-group Limits still cap guest memory.
+#[cfg(any(target_os = "ios", test))]
+fn configure_ios_memory(config: &mut wasmtime::Config) {
+    config
+        .memory_reservation(64 * 1024 * 1024)
+        .memory_reservation_for_growth(16 * 1024 * 1024)
+        .memory_guard_size(64 * 1024)
+        .memory_may_move(true);
+}
+
 /// The settings of the engine mods run on, without its epoch ticker.
 pub(crate) fn engine_config() -> wasmtime::Result<wasmtime::Config> {
     let mut config = wasmtime::Config::new();
     without_threads(&mut config);
     #[cfg(target_os = "ios")]
-    config.target("pulley64")?;
+    {
+        config.target("pulley64")?;
+        configure_ios_memory(&mut config);
+    }
     config.epoch_interruption(ENGINE_CONFIG.1);
     config.max_wasm_stack(horizon_guest_stack::GUEST_STACK_BYTES);
     // Wasmtime validates this bound even for synchronous engines. No async
@@ -458,12 +476,6 @@ pub(crate) struct WeakWasmMod {
 impl WeakWasmMod {
     pub(crate) fn equip_instance(&self) -> usize {
         Arc::as_ptr(&self.prepared) as usize
-    }
-    /// Whether the module's group has stopped or the module has been dropped.
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.running
-            .upgrade()
-            .is_some_and(|running| running.poisoned.load(Ordering::Relaxed))
     }
     pub(crate) fn prepare(&self, bytes: &[u8]) -> Option<(u32, u32)> {
         if self
@@ -799,12 +811,16 @@ fn host(
     }
     let mut input = std::mem::take(&mut caller.data_mut().imports[depth]);
     input.clear();
-    input.extend_from_slice(
-        memory
-            .data(&caller)
-            .get(ptr as usize..end)
-            .ok_or_else(|| wasmtime::Error::msg("input outside memory"))?,
-    );
+    let whole = memory
+        .data(&caller)
+        .get(ptr as usize..end)
+        .ok_or_else(|| wasmtime::Error::msg("input outside memory"))?;
+    let truncated = id == mod_api::wire::HOST_LOG && whole.len() > MAX_LOG_INPUT;
+    input.extend_from_slice(if truncated {
+        &whole[..MAX_LOG_INPUT]
+    } else {
+        whole
+    });
     #[cfg(feature = "test-copy-probe")]
     crate::copy_probe::record(false, input.len());
     let mut reply = std::mem::take(&mut caller.data_mut().replies[depth]);
@@ -835,11 +851,19 @@ fn host(
             .map(|_| ())
             .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))
     } else if id == mod_api::wire::HOST_LOG {
-        let mut reader = Reader::new(&input);
-        let message: String = reader.take()?;
-        if !reader.rest().is_empty() {
-            return Err(WireError::Trailing.into());
-        }
+        let message = if truncated {
+            // Only the head was copied: keep what of it is text, as the line is best-effort.
+            let text = input.get(4..).unwrap_or_default();
+            let text = String::from_utf8_lossy(text);
+            format!("{} ... (truncated)", text.trim_end_matches('\u{FFFD}'))
+        } else {
+            let mut reader = Reader::new(&input);
+            let message: String = reader.take()?;
+            if !reader.rest().is_empty() {
+                return Err(WireError::Trailing.into());
+            }
+            message
+        };
         // Release the Cx borrow before entering a possibly reentrant logger.
         let module = unsafe { (&*cx).module.as_ref().map(|module| module.id.clone()) }
             .ok_or_else(|| wasmtime::Error::msg("no calling module"))?;
@@ -1020,22 +1044,6 @@ impl WasmMod {
                     built: layout,
                     game: *mod_api::wire::LAYOUT,
                 });
-            }
-            if instance
-                .get_func(&mut group.store, "horizon_layout_ext")
-                .is_some()
-            {
-                let built = instance
-                    .get_typed_func::<(), u64>(&mut group.store, "horizon_layout_ext")
-                    .map_err(load)?
-                    .call(&mut group.store, ())
-                    .map_err(load)?;
-                if built != mod_points::points_layout() {
-                    return Err(Refusal::PointLayout {
-                        built,
-                        game: mod_points::points_layout(),
-                    });
-                }
             }
             let input = instance
                 .get_typed_func(&mut group.store, "horizon_in")

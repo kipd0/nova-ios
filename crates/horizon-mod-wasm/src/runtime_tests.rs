@@ -331,6 +331,34 @@ fn guest_panic_text_is_logged_with_mod_id_and_no_reply() {
 }
 
 #[test]
+fn an_oversized_guest_log_line_is_cut_before_it_is_copied() {
+    crate::test_stack::on_guest_stack(|| {
+        capture_logs();
+        let module = module(&format!(
+            "i32.const {} local.get 1 local.get 2 i32.const -1 i32.const 0 call $host i32.const 0 i32.ne if unreachable end i64.const 0",
+            mod_api::wire::HOST_LOG
+        ));
+        let long = "x".repeat(50_000);
+        let answer = module.call(
+            CallClass::Hook,
+            Frame::default(),
+            0,
+            None,
+            |w| w.put(&format!("oversized-log-line {long}")),
+            |r| r.take::<()>(),
+        );
+        assert_eq!(answer, Some(()));
+        let messages = CAPTURE.0.lock().unwrap();
+        let line = messages
+            .iter()
+            .find(|message| message.starts_with("wasm mod test: oversized-log-line "))
+            .expect("the line is still logged");
+        assert!(line.len() < 5000, "{} bytes", line.len());
+        assert!(line.ends_with("(truncated)"));
+    })
+}
+
+#[test]
 fn calls_do_not_leave_an_active_module_ownership_cycle() {
     crate::test_stack::on_guest_stack(|| {
         let module = module("i64.const 2199023255556");
@@ -786,34 +814,6 @@ fn layout_mismatch_is_a_mods_page_refusal() {
         assert!(refusal.to_string().contains("rebuild it"), "{refusal}");
     })
 }
-#[test]
-fn point_record_layout_mismatch_is_refused() {
-    crate::test_stack::on_guest_stack(|| {
-        let bytes = wat::parse_str(format!(
-            r#"(module (@custom "dylink.0" "\01\04\00\00\00\00")
-        (func (export "horizon_layout") (result i64) i64.const {})
-        (func (export "horizon_layout_ext") (result i64) i64.const {})
-        (func (export "horizon_in") (param i32) (result i32) i32.const 0)
-        (func (export "horizon_hook") (param i32) (result i64) i64.const 0))"#,
-            *mod_api::wire::LAYOUT,
-            mod_points::POINT_LAYOUT ^ 1
-        ))
-        .unwrap();
-        let refusal = WasmMod::instantiate(
-            &engine().unwrap(),
-            DEFAULT_GROUP_MEMORY_MIB,
-            &[Member {
-                name: "points",
-                module: &bytes,
-            }],
-            None,
-        )
-        .err()
-        .unwrap();
-        assert!(matches!(refusal, Refusal::PointLayout { .. }));
-    })
-}
-
 #[test]
 fn callback_borrows_only_the_lent_context_and_restores_depth() {
     crate::test_stack::on_guest_stack(|| {
@@ -2201,6 +2201,39 @@ fn grow_until_refused(memory_mib: u32) -> i32 {
 fn a_group_grows_past_256_mib_to_its_default_limit_and_goes_on_there() {
     // 1 GiB of 64 KiB pages: four times the old 256 MiB.
     assert_eq!(grow_until_refused(DEFAULT_GROUP_MEMORY_MIB), 16_384);
+}
+
+#[test]
+fn ios_memory_policy_supports_multiple_groups_and_growth_past_reservation() {
+    let mut config = wasmtime::Config::new();
+    super::without_threads(&mut config);
+    config.target("pulley64").unwrap();
+    super::configure_ios_memory(&mut config);
+    let engine = Engine::new(&config).unwrap();
+
+    // Each independent dependency group owns its own store and memory.
+    let mut first = Store::new(&engine, State::new(Limits::new("first".into(), 80)));
+    let mut second = Store::new(&engine, State::new(Limits::new("second".into(), 80)));
+    first.limiter(|state| &mut state.limits);
+    second.limiter(|state| &mut state.limits);
+    let a = Memory::new(&mut first, wasmtime::MemoryType::new(1, None)).unwrap();
+    let b = Memory::new(&mut second, wasmtime::MemoryType::new(1, None)).unwrap();
+    a.write(&mut first, 0, &[7]).unwrap();
+    b.write(&mut second, 0, &[9]).unwrap();
+
+    // Cross the 64 MiB initial reservation; the memory may relocate, but its
+    // contents and the other group's memory must remain intact.
+    assert_eq!(a.grow(&mut first, 65 * 16 - 1).unwrap(), 1);
+    assert_eq!(a.data(&first)[0], 7);
+    assert_eq!(b.data(&second)[0], 9);
+    a.write(&mut first, 65 * 1024 * 1024 - 1, &[11]).unwrap();
+    assert_eq!(a.data(&first)[65 * 1024 * 1024 - 1], 11);
+
+    // Smaller address-space reservations are not a new guest memory ceiling.
+    // The existing per-group resource limiter still refuses growth past 80 MiB.
+    assert!(a.grow(&mut first, 16 * 16).is_err());
+    assert_eq!(a.size(&first), 65 * 16);
+    assert_eq!(b.size(&second), 1);
 }
 
 #[test]
