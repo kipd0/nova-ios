@@ -21,7 +21,7 @@ Nova is an iPhone and iPad launcher for Horizon, a Minecraft Java Edition implem
 ![Nova touch layout editor with custom buttons](docs/media/nova/custom-touch-layout.jpg)
 
 *Add, move, resize, copy, or remove on-screen controls. Assign keyboard keys, mouse buttons, or a movement joystick, ability to hide on-screen controls from recording. Save and load your own layouts.*
-
+ 
 ### iOS launcher
 
 ![Nova launcher with account, controls, logs, resource pack, shader, and mod options](docs/media/nova/nova-launcher.png)
