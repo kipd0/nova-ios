@@ -1857,7 +1857,7 @@ mod tests {
             let mut b = boat();
             b.position = Vec3::new(1.5, 200.2, 1.5);
             b.velocity.y = -0.6;
-            let b = game.tick_boat(b, false);
+            let b = game.tick_boat(b, None);
             assert_eq!(b.position.y, 200.0, "the fall clips on the floor");
             assert_eq!(b.velocity.y, 0.0, "and the collision zeroes it");
             // The source at y=201 has air above: 201 + 8/9.
