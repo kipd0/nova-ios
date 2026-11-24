@@ -1,0 +1,645 @@
+import Foundation
+import UIKit
+import SwiftUI
+import Darwin
+
+/// Transparent overlay over winit's existing UIWindow. Empty areas still
+/// receive native winit touches; only visible controls intercept a finger.
+private final class NovaPassthroughView: UIView {
+    var onResize: (() -> Void)?
+    var blocksGameplay = false
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if blocksGameplay { return bounds.contains(point) }
+        return subviews.contains { view in
+            !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled &&
+                view.point(inside: view.convert(point, from: self), with: event)
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onResize?()
+    }
+}
+
+private final class NovaOverlayButton: UIButton {
+    var control: NovaTouchControl
+    init(control: NovaTouchControl) {
+        self.control = control
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError("Use init(control:)") }
+}
+
+/// Hosts only Nova's visible touch controls inside UIKit's secure canvas.
+/// Unlike the old implementation, this identifies the actual text-layout canvas
+/// rather than taking the first (possibly unprotected) UITextField subview.
+/// The text field stays retained but its secure canvas is moved into our overlay,
+/// so only the buttons/joystick are excluded from screen capture.
+private final class NovaRecordingProtectedView: UIView {
+    private let secureField = UITextField(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+    private(set) var secureCanvas: UIView?
+    private var touchTargets: [UIView] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+
+        secureField.backgroundColor = .clear
+        secureField.isUserInteractionEnabled = false
+        secureField.isSecureTextEntry = true
+        secureField.text = " "
+        secureField.layoutIfNeeded()
+
+        // Apple's internal class name has varied by iOS version. Never use
+        // subviews.first: on newer systems that can be an ordinary wrapper.
+        let canvas = secureField.subviews.first(where: {
+            let name = String(describing: type(of: $0))
+            return name.contains("TextLayoutCanvasView") ||
+                   name.contains("TextFieldCanvasView")
+        })
+        guard let canvas else {
+            let types = secureField.subviews
+                .map { String(describing: type(of: $0)) }
+                .joined(separator: ",")
+            NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-missing; children=\(types)")
+            return
+        }
+
+        // This view has the actual capture-excluded Core Animation layer.
+        // Keep the UITextField retained for the lifetime of the canvas.
+        canvas.removeFromSuperview()
+        canvas.backgroundColor = .clear
+        canvas.isUserInteractionEnabled = true
+        canvas.clipsToBounds = false
+        canvas.frame = bounds
+        canvas.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(canvas)
+        secureCanvas = canvas
+        NovaDiagnostics.record("overlay.capture-buttons.secure-canvas-found; type=\(String(describing: type(of: canvas)))")
+    }
+
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // UITextField's detached canvas must occupy the entire overlay, not
+        // the small original text-entry frame or a UIKit-generated inset.
+        secureCanvas?.frame = bounds
+    }
+
+    func host(_ views: [UIView]) -> Bool {
+        guard let canvas = secureCanvas else {
+            touchTargets = []
+            return false
+        }
+        for view in views { canvas.addSubview(view) }
+        touchTargets = views
+        return true
+    }
+
+    func clearTargets() {
+        touchTargets = []
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        touchTargets.contains { view in
+            !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled &&
+                view.point(inside: view.convert(point, from: self), with: event)
+        }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, alpha > 0.01, isUserInteractionEnabled else { return nil }
+        for view in touchTargets.reversed()
+        where !view.isHidden && view.alpha > 0.01 && view.isUserInteractionEnabled {
+            if let hit = view.hitTest(view.convert(point, from: self), with: event) {
+                return hit
+            }
+        }
+        return nil
+    }
+}
+
+/// The game still owns UIApplicationMain, Metal, the window and its event loop.
+/// Nova only adds UIKit controls and SwiftUI sheets to that existing window.
+final class NovaGameOverlay: NSObject, UITextFieldDelegate {
+    static let shared = NovaGameOverlay()
+
+    private weak var gameWindow: UIWindow?
+    private let overlay = NovaPassthroughView()
+    private var panelController: UIViewController?
+    private var activeControls: [(view: UIView, control: NovaTouchControl)] = []
+    private let mouseSurface = NovaMouseSurface(frame: .zero)
+    private let recordingProtection = NovaRecordingProtectedView(frame: .zero)
+    private let cursorView: UIImageView = {
+        // This is the actual supplied black/white PNG, not a system symbol.
+        let url = Bundle.main.url(forResource: "NovaPointer", withExtension: "png")
+            ?? Bundle.main.url(forResource: "NovaPointer", withExtension: "png",
+                               subdirectory: "GameHost")
+        let original = url.flatMap { UIImage(contentsOfFile: $0.path) }
+            ?? UIImage(named: "NovaPointer")
+        let view = UIImageView(image: original?.withRenderingMode(.alwaysOriginal)
+            ?? UIImage(systemName: "cursorarrow")?.withRenderingMode(.alwaysTemplate))
+        view.tintColor = .white
+        return view
+    }()
+    private var cursorPoint: CGPoint?
+    private var lastCursorEpoch: UInt64?
+    private var cursorVisibilityTimer: Timer?
+    private var layout: NovaTouchLayout = NovaTouchLayouts.current()
+    private let textField = UITextField(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
+    private var isEditingLayout = false
+    private var isInMenu = false
+
+    /// Run before Horizon enters winit; wait until winit creates its UIWindow.
+    static func scheduleInstall() {
+        DispatchQueue.main.async { shared.attachWhenWindowExists(remaining: 300) }
+    }
+
+    private func attachWhenWindowExists(remaining: Int) {
+        guard gameWindow == nil else { return }
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+        if let window = windows.first(where: {
+            !$0.isHidden && $0.bounds.width > 10 && $0.bounds.height > 10 &&
+                $0.rootViewController != nil
+        }) {
+            install(on: window)
+        } else if remaining > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                self.attachWhenWindowExists(remaining: remaining - 1)
+            }
+        } else {
+            NovaDiagnostics.record("overlay.install.failed; window-not-found")
+        }
+    }
+
+    private func install(on window: UIWindow) {
+        gameWindow = window
+        overlay.frame = window.bounds
+        overlay.backgroundColor = .clear
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.onResize = { [weak self] in self?.layoutButtons() }
+        // Keep the overlay in the winit view-controller hierarchy, above its
+        // Metal-backed view, so SwiftUI sheets and alerts can be presented.
+        window.rootViewController?.view.addSubview(overlay)
+
+        // Every unobstructed part of the screen acts as a mouse surface.
+        // Explicit touch buttons and the joystick are placed above it.
+        mouseSurface.frame = overlay.bounds
+        mouseSurface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        mouseSurface.onDrag = { [weak self] delta in
+            self?.moveCursor(by: delta)
+        }
+        mouseSurface.onTap = { [weak self] location in
+            self?.tapGameSurface(at: location)
+        }
+        overlay.addSubview(mouseSurface)
+
+        // A separate secure canvas contains only touch-control visuals.
+        // Metal gameplay, the cursor, and SwiftUI menus remain recordable.
+        recordingProtection.frame = overlay.bounds
+        recordingProtection.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.addSubview(recordingProtection)
+
+        textField.alpha = 0.02
+        textField.autocapitalizationType = .none
+        textField.autocorrectionType = .no
+        textField.spellCheckingType = .no
+        textField.delegate = self
+        textField.text = " "
+        overlay.addSubview(textField)
+        // A PC-style mouse pointer is independent of touch controls. It
+        // never receives taps, and left/right buttons use its position.
+        cursorView.isUserInteractionEnabled = false
+        cursorView.contentMode = .scaleAspectFit
+        overlay.addSubview(cursorView)
+
+        let enabled = UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
+        nova_ios_set_touch_gestures(enabled)
+        applyLayout()
+        showMenu()
+        cursorVisibilityTimer = Timer.scheduledTimer(withTimeInterval: 0.08,
+                                                     repeats: true) { [weak self] _ in
+            self?.updateCursorVisibility()
+        }
+        NovaDiagnostics.record("overlay.install.succeeded; layout=\(layout.name)")
+    }
+
+    private func applyLayout() {
+        recordingProtection.clearTargets()
+        activeControls.forEach { $0.view.removeFromSuperview() }
+        activeControls.removeAll()
+        layout = NovaTouchLayouts.current()
+        var controls = layout.controls
+        // Older layouts can always open the menu without a swipe.
+        if !controls.contains(where: { $0.kind == "menu" }) {
+            controls.append(NovaTouchControl(name: "Menu", kind: "menu",
+                                             x: 0.07, y: 0.12, size: 50,
+                                             opacity: 0.8))
+        }
+
+        for control in controls {
+            if control.kind == "joystick" {
+                let joystick = NovaJoystickView(control: control)
+                overlay.addSubview(joystick)
+                activeControls.append((joystick, control))
+                continue
+            }
+            if control.kind == "virtualMouse" {
+                // Legacy layouts may still contain a trackpad control.
+                // It is no longer drawn or necessary.
+                continue
+            }
+            let button = NovaOverlayButton(control: control)
+            button.isExclusiveTouch = false
+            button.backgroundColor = UIColor.black.withAlphaComponent(control.opacity)
+            button.layer.cornerRadius = 12
+            button.layer.borderColor = UIColor.white.withAlphaComponent(0.75).cgColor
+            button.layer.borderWidth = 1
+            button.setTitle(control.name, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+            button.titleLabel?.adjustsFontSizeToFitWidth = true
+            button.titleLabel?.minimumScaleFactor = 0.55
+            button.addTarget(self, action: #selector(buttonDown(_:)), for: .touchDown)
+            button.addTarget(self, action: #selector(buttonUp(_:)),
+                             for: [.touchUpInside, .touchUpOutside, .touchCancel])
+            overlay.addSubview(button)
+            activeControls.append((button, control))
+        }
+        configureRecordingProtection()
+        layoutButtons()
+        refreshTouchGestures()
+    }
+
+    private func configureRecordingProtection() {
+        let enabled = UserDefaults.standard.bool(forKey: "nova.touch.hideButtonsFromRecording")
+        let views = activeControls.map { $0.view }
+        if enabled && recordingProtection.host(views) {
+            NovaDiagnostics.record("overlay.capture-buttons.enabled; protected=\(views.count)")
+        } else {
+            recordingProtection.clearTargets()
+            for view in views { overlay.addSubview(view) }
+            if enabled {
+                NovaDiagnostics.record("overlay.capture-buttons.unavailable; using-visible-controls")
+            } else {
+                NovaDiagnostics.record("overlay.capture-buttons.disabled")
+            }
+        }
+    }
+
+    private func layoutButtons() {
+        let bounds = overlay.bounds
+        guard bounds.width > 10, bounds.height > 10 else { return }
+        if recordingProtection.frame != bounds {
+            recordingProtection.frame = bounds
+        }
+        for (view, control) in activeControls {
+            let width = control.kind == "joystick"
+                ? max(110, CGFloat(control.buttonWidth)) : CGFloat(control.buttonWidth)
+            let height = control.kind == "joystick"
+                ? max(110, CGFloat(control.buttonHeight)) : CGFloat(control.buttonHeight)
+            view.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            let screenPoint = CGPoint(x: bounds.width * control.x,
+                                      y: bounds.height * control.y)
+            view.center = view.superview.map { overlay.convert(screenPoint, to: $0) }
+                ?? screenPoint
+        }
+        if cursorPoint == nil {
+            cursorPoint = CGPoint(x: bounds.midX, y: bounds.midY)
+        }
+        redrawCursor()
+        overlay.bringSubviewToFront(textField)
+        overlay.bringSubviewToFront(cursorView)
+        if let panel = panelController?.view { overlay.bringSubviewToFront(panel) }
+    }
+
+
+    private func redrawCursor() {
+        let scale = UserDefaults.standard.double(forKey: "nova.mouse.scale")
+        let factor = CGFloat(scale == 0 ? 1.0 : scale)
+        let location = cursorPoint ?? CGPoint(x: overlay.bounds.midX,
+                                              y: overlay.bounds.midY)
+        cursorView.frame = CGRect(x: location.x, y: location.y,
+                                  width: 24 * factor, height: 36 * factor)
+    }
+
+    private func centerCursor() {
+        // Menu opening resets the pointer's visual position and engine position.
+        cursorPoint = CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
+        redrawCursor()
+        sendCurrentCursor()
+    }
+
+    private func updateCursorVisibility() {
+        let state = nova_ios_pointer_state()
+        let inWorld = (state & 1) != 0
+        let epoch = state >> 1
+        if lastCursorEpoch != epoch {
+            lastCursorEpoch = epoch
+            if !inWorld && !isInMenu {
+                centerCursor()
+            }
+        }
+        // Horizon's title is not world gameplay. Keep the cursor available
+        // in the title, inventory, options, pause and other GUI screens.
+        cursorView.isHidden = isInMenu || inWorld
+    }
+
+    private func moveCursor(by delta: CGPoint) {
+        guard !isInMenu, let window = gameWindow else { return }
+        let saved = UserDefaults.standard.double(forKey: "nova.mouse.sensitivity")
+        let sensitivity = CGFloat(saved == 0 ? 1 : saved)
+        let dx = delta.x * sensitivity
+        let dy = delta.y * sensitivity
+        if (nova_ios_pointer_state() & 1) != 0 {
+            // First-person look is purely relative; don't move/redraw the
+            // hidden UIKit cursor at every touch sample.
+            nova_ios_input_motion(Double(dx), Double(dy))
+            return
+        }
+
+        // Only GUI screens need absolute cursor updates in Metal pixels.
+        let prev = cursorPoint ?? CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
+        cursorPoint = CGPoint(
+            x: min(overlay.bounds.maxX - 8, max(0, prev.x + dx)),
+            y: min(overlay.bounds.maxY - 8, max(0, prev.y + dy))
+        )
+        redrawCursor()
+        let scale = Double(window.screen.scale)
+        let point = cursorPoint ?? prev
+        nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
+    }
+
+    private func tapGameSurface(at location: CGPoint) {
+        let touchGesturesEnabled =
+            UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
+        guard !isInMenu, touchGesturesEnabled,
+              (nova_ios_pointer_state() & 1) == 0 else { return }
+        // Preserve direct menu taps. Never trigger attack in first-person
+        // merely because a finger landed on the screen.
+        cursorPoint = CGPoint(
+            x: max(0, min(overlay.bounds.maxX, location.x)),
+            y: max(0, min(overlay.bounds.maxY, location.y))
+        )
+        redrawCursor()
+        sendCurrentCursor()
+        nova_ios_input_mouse(0, true)
+        nova_ios_input_mouse(0, false)
+    }
+
+    private func refreshTouchGestures() {
+        let enabled = UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
+        nova_ios_set_touch_gestures(enabled)
+    }
+
+    private func setControlsVisible(_ visible: Bool) {
+        activeControls.forEach { $0.view.isHidden = !visible }
+        mouseSurface.isHidden = !visible
+        if !visible {
+            mouseSurface.cancelTouch()
+            for item in activeControls {
+                (item.view as? NovaJoystickView)?.releaseAll()
+            }
+        }
+        cursorView.isHidden = !visible
+        if !visible { textField.resignFirstResponder() }
+    }
+
+    private func showMenu() {
+        guard !isEditingLayout else { return }
+        isInMenu = true
+        overlay.blocksGameplay = true
+        nova_ios_set_overlay_active(true)
+        setControlsVisible(false)
+        let view = NovaMenuView(
+            onPlay: { [weak self] in self?.hidePanel() },
+            onEdit: { [weak self] in self?.showEditor() },
+            onSettings: { [weak self] in self?.showSettings() },
+            onLogs: { [weak self] in self?.showLogs() },
+            onClose: { [weak self] in self?.requestClose() }
+        )
+        present(view)
+    }
+
+    private func hidePanel() {
+        removePanel()
+        isInMenu = false
+        isEditingLayout = false
+        overlay.blocksGameplay = false
+        nova_ios_set_overlay_active(false)
+        setControlsVisible(true)
+        refreshTouchGestures()
+        updateCursorVisibility()
+    }
+
+    private func removePanel() {
+        guard let controller = panelController else { return }
+        controller.willMove(toParent: nil)
+        controller.view.removeFromSuperview()
+        controller.removeFromParent()
+        panelController = nil
+    }
+
+    private func present<V: View>(_ view: V) {
+        removePanel()
+        let controller = UIHostingController(rootView: view)
+        controller.view.backgroundColor = .clear
+        controller.view.frame = overlay.bounds
+        controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        if let parent = gameWindow?.rootViewController {
+            parent.addChild(controller)
+            overlay.addSubview(controller.view)
+            controller.didMove(toParent: parent)
+        } else {
+            overlay.addSubview(controller.view)
+        }
+        panelController = controller
+    }
+
+    private func showEditor() {
+        isEditingLayout = true
+        setControlsVisible(false)
+        present(NovaTouchLayoutEditor(
+            onDone: { [weak self] in
+                self?.isEditingLayout = false
+                self?.showMenu()
+            },
+            onSave: { [weak self] updated in
+                self?.layout = updated
+                self?.applyLayout()
+            }
+        ))
+    }
+
+    private func showSettings() {
+        present(NovaTouchSettingsView(onDone: { [weak self] in
+            self?.applyLayout()
+            self?.showMenu()
+        }))
+    }
+
+    private func showLogs() {
+        present(NovaGameLogsView(onDone: { [weak self] in self?.showMenu() }))
+    }
+
+    private func requestClose() {
+        NovaDiagnostics.record("overlay.force-quit")
+        // Force Close is immediate and does not imply a save.
+        Darwin.exit(EXIT_SUCCESS)
+    }
+
+    @objc private func buttonDown(_ sender: NovaOverlayButton) {
+        switch sender.control.kind {
+        case "keyboard":
+            nova_ios_input_key(NovaTouchLayouts.keyCode(sender.control.key), true)
+        case "mouseLeft":
+            sendCurrentCursor()
+            nova_ios_input_mouse(0, true)
+        case "mouseRight":
+            sendCurrentCursor()
+            nova_ios_input_mouse(1, true)
+        case "virtualKeyboard":
+            textField.text = " "
+            textField.becomeFirstResponder()
+        case "menu":
+            if isInMenu { hidePanel() } else { showMenu() }
+        default:
+            break
+        }
+    }
+
+    @objc private func buttonUp(_ sender: NovaOverlayButton) {
+        switch sender.control.kind {
+        case "keyboard":
+            nova_ios_input_key(NovaTouchLayouts.keyCode(sender.control.key), false)
+        case "mouseLeft":
+            nova_ios_input_mouse(0, false)
+        case "mouseRight":
+            nova_ios_input_mouse(1, false)
+        default:
+            break
+        }
+    }
+
+    private func sendCurrentCursor() {
+        guard let window = gameWindow else { return }
+        let point = cursorPoint ?? CGPoint(x: overlay.bounds.midX, y: overlay.bounds.midY)
+        let scale = Double(window.screen.scale)
+        nova_ios_input_cursor(Double(point.x) * scale, Double(point.y) * scale)
+    }
+
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange,
+                   replacementString string: String) -> Bool {
+        if string.isEmpty {
+            nova_ios_input_key(NovaTouchLayouts.keyCode("Backspace"), true)
+            nova_ios_input_key(NovaTouchLayouts.keyCode("Backspace"), false)
+        } else {
+            string.withCString { nova_ios_input_text($0) }
+        }
+        // Restore a deletable sentinel for consecutive Backspace presses.
+        textField.text = " "
+        return false
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        nova_ios_input_keyboard_closed()
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        nova_ios_input_key(NovaTouchLayouts.keyCode("Enter"), true)
+        nova_ios_input_key(NovaTouchLayouts.keyCode("Enter"), false)
+        textField.resignFirstResponder()
+        return false
+    }
+}
+
+private struct NovaTouchSettingsView: View {
+    let onDone: () -> Void
+    @State private var mouseScale =
+        UserDefaults.standard.double(forKey: "nova.mouse.scale") == 0
+        ? 1.0 : UserDefaults.standard.double(forKey: "nova.mouse.scale")
+    @State private var sensitivity =
+        UserDefaults.standard.double(forKey: "nova.mouse.sensitivity") == 0
+        ? 1.0 : UserDefaults.standard.double(forKey: "nova.mouse.sensitivity")
+    @State private var touchGestures =
+        UserDefaults.standard.object(forKey: "nova.touch.gestures") as? Bool ?? true
+    @State private var hideButtonsFromRecording =
+        UserDefaults.standard.bool(forKey: "nova.touch.hideButtonsFromRecording")
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Virtual Mouse") {
+                    Text("Mouse scale: \(mouseScale, specifier: "%.2f")×")
+                    Slider(value: $mouseScale, in: 0.5...3.0)
+                    Text("Mouse sensitivity: \(sensitivity, specifier: "%.2f")×")
+                    Slider(value: $sensitivity, in: 0.2...4.0)
+                }
+                Section("Touch") {
+                    Toggle("Touch gestures", isOn: $touchGestures)
+                    Text("Disable to ignore direct screen taps and swipes in Horizon. Touch buttons remain available.")
+                        .font(.footnote)
+                    Toggle("Hide touch screen buttons from screen recording",
+                           isOn: $hideButtonsFromRecording)
+                    Text("Buttons remain visible and usable while playing, but are excluded from screen recordings and screenshots on supported iOS versions.")
+                        .font(.footnote)
+                }
+                Section("Layouts") {
+                    Text("JSON layouts are in Files → On My iPad → Nova → TouchLayouts.")
+                        .font(.footnote)
+                }
+            }
+            .navigationTitle("Nova Settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        UserDefaults.standard.set(mouseScale, forKey: "nova.mouse.scale")
+                        UserDefaults.standard.set(sensitivity, forKey: "nova.mouse.sensitivity")
+                        UserDefaults.standard.set(touchGestures, forKey: "nova.touch.gestures")
+                        UserDefaults.standard.set(hideButtonsFromRecording,
+                                                  forKey: "nova.touch.hideButtonsFromRecording")
+                        nova_ios_set_touch_gestures(touchGestures)
+                        onDone()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct NovaGameLogsView: View {
+    let onDone: () -> Void
+    @State private var logs = NovaDiagnostics.tail()
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(logs)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle("Nova Logs")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onDone)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Refresh") { logs = NovaDiagnostics.tail() }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    if let url = NovaDiagnostics.logURL() {
+                        ShareLink(item: url) {
+                            Label("Export lastlog.text", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,18 @@
+Build request: integrated Nova iOS IPA
+Requested after cursor, drag-anywhere, and menu-centering fixes.
+Branch: test
+Requested per-launch timestamped logs and full Horizon log forwarding.
+Requested independent X/Y button sizes up to 300 percent.
+Fix virtual keyboard delete, dismissal, F3 and menu Escape routing.
+Snap touch layout buttons to neighboring edges on drag release.
+Fix winit private KeyEvent compile failure.
+Fix loading menu key focus signature for iOS compile.
+Expose keyboard close bridge function to Swift header.
+Route iOS virtual keys through native screen and debug handlers.
+Build after upstream Horizon PR #3 integration.
+Fix iOS virtual Shift/Control modifier state for Sneak/Sprint; follow updated upstream module locations.
+Refresh iOS workflow for upstream allocator and entry startup API.
+Release virtual modifier state when opening Nova overlay.
+Retry integrated Nova iOS build after fixing upstream renderer device needs diagnostics patch (2026-11-16).
+Retry build #117 after moving Metal and GPU startup patches to gfx/device.rs (2026-11-17).
+Retry main after adapting iOS modal capture to upstream grab_refused (2026-11-19).

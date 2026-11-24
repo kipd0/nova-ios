@@ -1,0 +1,66 @@
+name: HorizonIOS
+options:
+  bundleIdPrefix: dev.horizonios
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  HorizonIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: App
+      - path: GameHost
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Nova
+        NovaBuildCommit: $(NOVA_GIT_COMMIT)
+        NovaBuildRun: $(NOVA_GIT_RUN)
+        HorizonMSAClientID: $(NOVA_MSA_CLIENT_ID)
+        LSRequiresIPhoneOS: true
+        UIRequiresFullScreen: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: true
+        UIApplicationSupportsDocumentBrowser: false
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.horizonios.nova
+        PRODUCT_NAME: Nova
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        NOVA_GIT_COMMIT: local
+        NOVA_GIT_RUN: local
+        NOVA_MSA_CLIENT_ID: ""
+        SWIFT_OBJC_BRIDGING_HEADER: RustBridge/include/HorizonBridge.h
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(PROJECT_DIR)/Build/rust
+        HORIZON_IOS_RUST_LIB: horizon_ios_bridge
+        # Experimental iOS main-thread stack reservation: 128 MiB guest + 8 MiB host.
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -Wl,-stack_size,0x8800000
+          - -l$(HORIZON_IOS_RUST_LIB)
+          - -framework
+          - AudioToolbox
+        CODE_SIGN_STYLE: Manual
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+schemes:
+  HorizonIOS:
+    build:
+      targets:
+        HorizonIOS: all

@@ -130,7 +130,9 @@ impl<'scope, T: Send + 'scope> Step<'scope, T> {
     }
     pub(super) fn join(self) -> T {
         match self {
-            Self::Thread(handle) => handle.join().unwrap(),
+            Self::Thread(handle) => handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             Self::Later(f) => f(),
         }
     }
@@ -787,6 +789,7 @@ pub(super) fn load_resources(
         let handle = horizon_guest_stack::builder()
             .name("world-rest-loader".into())
             .spawn(move || {
+                eprintln!("[nova-worker] world-rest.started");
                 let _step = startup::step("rest");
                 let rest = world_rest::load_world_rest(
                     &resource_root,
@@ -801,12 +804,17 @@ pub(super) fn load_resources(
                     started,
                     true,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    eprintln!("[nova-worker] world-rest.failed: {error}");
+                    error.to_string()
+                })?;
+                eprintln!("[nova-worker] world-rest.built");
                 resources
                     .rest
                     .set(rest)
                     .map_err(|_| "world resources already loaded".to_owned())?;
                 progress.set(9);
+                eprintln!("[nova-worker] world-rest.published");
                 log::info!(
                     "Horizon: rest-ready after {} ms",
                     started.elapsed().as_millis()
@@ -850,7 +858,7 @@ pub(super) fn load_resources(
                 })
             });
             let game_cpu = startup::time("handoff.game_cpu", || {
-                GameCpuResources::load(&resolved, entity_models.as_deref())
+                GameCpuResources::load(&resolved, entity_models.as_deref(), role)
             });
             (game_cpu, textures.join())
         });

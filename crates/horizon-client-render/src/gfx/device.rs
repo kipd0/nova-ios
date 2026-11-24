@@ -92,6 +92,11 @@ pub(crate) fn backend_order(
     wgpu_backend: bool,
 ) -> Vec<wgpu::Backends> {
     use wgpu::Backends;
+    // Nova iOS: UIKit provides a CAMetalLayer, not Vulkan or desktop GL.
+    // Choose the native Metal backend regardless of desktop settings.
+    if os == "ios" {
+        return vec![Backends::METAL];
+    }
     if os == "macos" || wgpu_backend {
         return vec![Backends::default()];
     }
@@ -281,6 +286,7 @@ pub(super) async fn open_device(
     api: GraphicsApi,
     needs: surface_setup::DeviceNeeds,
 ) -> Result<Opened> {
+    startup_step(format_args!("gpu.open_device.begin"));
     let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
     // A search that hangs does so inside the driver, where nothing in this process can
     // interrupt it: the search stays on this thread (a window's surface can only be made
@@ -344,6 +350,7 @@ async fn open_device_search(
     );
     let mut first = None;
     for (order, allow_cpu) in tries {
+        startup_step(format_args!("gpu.open_device.try backends={order:?}"));
         match open_device_with(&window, offscreen, &order, needs, allow_cpu, active_api).await {
             Ok(opened) => {
                 if let Some(first) = &first {
@@ -569,7 +576,9 @@ async fn open_backend(
             dx12_compiler,
         ))
     };
-    let instance = open(wgpu::Dx12Compiler::Fxc);
+    startup_step(format_args!("backend.{name}.instance.begin"));
+        let instance = open(wgpu::Dx12Compiler::Fxc);
+        startup_step(format_args!("backend.{name}.instance.created"));
     let (surface, adapter) = match surface_and_adapter(&instance, window, offscreen).await {
         Ok(found) => found,
         Err(NoDevice::Failed(e)) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
@@ -691,17 +700,20 @@ async fn surface_and_adapter(
     window: &Arc<Window>,
     offscreen: bool,
 ) -> std::result::Result<(Option<wgpu::Surface<'static>>, wgpu::Adapter), NoDevice> {
-    let surface = if offscreen {
-        None
-    } else {
-        Some(
-            instance
+    startup_step(format_args!("gpu.surface.begin"));
+        let surface = if offscreen {
+            None
+        } else {
+            Some(
+                instance
                 .create_surface(window.clone())
                 .map_err(|e| NoDevice::Failed(e.to_string()))?,
         )
     };
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
+    startup_step(format_args!("gpu.surface.created"));
+        startup_step(format_args!("gpu.adapter.begin"));
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
@@ -709,6 +721,7 @@ async fn surface_and_adapter(
         })
         .await
         .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+    startup_step(format_args!("gpu.adapter.created"));
     Ok((surface, adapter))
 }
 /// The DirectX 12 instance, surface and adapter with DXC for the integrated

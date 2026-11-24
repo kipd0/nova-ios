@@ -593,6 +593,12 @@ impl Loading {
             match event {
                 // No world debug list exists before Game construction.
                 Event::DebugEntriesChanged => {}
+                Event::GraphicsBenchmark(action) => {
+                    if super::graphics_tuning::action(action, &mut self.settings) {
+                        self.save_menu_settings();
+                        self.apply_menu_settings();
+                    }
+                }
                 Event::Changed => {
                     self.save_menu_settings();
                     self.settings.keys.sync_action_bindings();
@@ -933,7 +939,7 @@ impl Loading {
     /// resources load, as `Game::key_focus_key` does it in the game (the
     /// pointer sits on the focus; a step past a list's visible rows doesn't
     /// scroll it here). Whether the key was used.
-    fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
+    pub(super) fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
         // This safety prompt owns its default and spatial navigation in Title.
         if !self.menu.options_open
             && self
@@ -1395,6 +1401,9 @@ impl Loading {
                 self.menu.win = None;
             }
         } else if self.menu.options_open {
+            self.menu
+                .options
+                .set_graphics_benchmark(super::graphics_tuning::view(&self.settings));
             let pack = (self.renderer.as_ref()).and_then(|r| r.native_pack_name());
             if self.settings.running_pack.as_deref() != pack {
                 self.settings.running_pack = pack.map(str::to_owned);

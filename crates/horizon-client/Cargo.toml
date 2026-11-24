@@ -65,6 +65,8 @@ horizon-mod-package = { path = "../horizon-mod-package", default-features = fals
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
+# Nova iOS: grow stack for winit callbacks, as Kelly-Inc/horizon-ios.
+stacker = "=0.1.25"
 bytemuck = { version = "1.24", features = ["derive"] }
 glam = "0.30"
 png = "0.18"

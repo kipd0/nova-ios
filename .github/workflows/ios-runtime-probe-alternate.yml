@@ -1,0 +1,33 @@
+name: Nova IPA - alternate macOS runner
+
+# Start this from Actions > Nova IPA - alternate macOS runner > Run workflow.
+# The first push creates an initial run on macOS 26 Intel.
+# Pick a different supported runner if one is queued for too long.
+# Retry the iOS frame watchdog build after patch-anchor fix (17 Nov 2026).
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner to build the Nova IPA
+        type: choice
+        required: true
+        default: macos-26-intel
+        options:
+          - macos-26-intel
+          - macos-26
+          - macos-15-intel
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ios-runtime-probe-alternate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  original-game-ios-compile:
+    # Reuse the real build, patches, signing-free IPA packaging and artifacts;
+    # do not duplicate and accidentally diverge from the primary workflow.
+    uses: ./.github/workflows/ios-runtime-probe.yml
+    with:
+      runner: ${{ inputs.runner || 'macos-26-intel' }}

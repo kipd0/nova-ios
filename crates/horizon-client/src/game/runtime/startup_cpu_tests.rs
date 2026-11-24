@@ -71,6 +71,7 @@ fn worker_prepares_owned_models_and_inventory_before_handoff() {
         GameCpuResources::load(
             &horizon_assets::resource_source::ResourceRoot::directory(worker_root),
             None,
+            execution_role::ExecutionRole::IntegratedServer,
         )
         .map_err(|error| error.to_string())
     })
@@ -96,7 +97,8 @@ fn worker_prepares_owned_models_and_inventory_before_handoff() {
     assert!(
         GameCpuResources::load(
             &horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
-            None
+            None,
+            execution_role::ExecutionRole::IntegratedServer,
         )
         .is_err()
     );

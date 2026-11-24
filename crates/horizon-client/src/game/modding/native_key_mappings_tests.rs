@@ -91,6 +91,29 @@ fn a_control_socket_key_counts_as_a_window_key() {
         assert!(!click(game, "zoom"));
         assert_eq!(heard(), ["key.keyboard.z Press", "key.keyboard.z Release"]);
 
+        // Nova's touch controls deliver separate down/up edges through the iOS adapter.
+        use winit::keyboard::KeyCode;
+        game.ios_virtual_key(&NoLoop, KeyCode::ShiftLeft, true);
+        game.ios_virtual_key(&NoLoop, KeyCode::KeyZ, true);
+        assert!(down(game, "boost"));
+        game.ios_virtual_key(&NoLoop, KeyCode::KeyZ, false);
+        game.ios_virtual_key(&NoLoop, KeyCode::ShiftLeft, false);
+        assert!(!down(game, "zoom"));
+        assert!(!down(game, "boost"));
+        for id in ["boost", "zoom"] {
+            assert!(click(game, id));
+            assert!(!click(game, id));
+        }
+        assert_eq!(
+            heard(),
+            [
+                "key.keyboard.left.shift Press",
+                "key.keyboard.z Press",
+                "key.keyboard.z Release",
+                "key.keyboard.left.shift Release",
+            ]
+        );
+
         // Held with two repeats: three clicks.
         line(game, "key z down");
         line(game, "key z repeat");

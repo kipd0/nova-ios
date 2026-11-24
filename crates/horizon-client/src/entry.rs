@@ -1,5 +1,14 @@
 //! Startup shared by the gameplay library and its executable.
 use crate::{crash, game, logging};
+
+fn nova_entry_trace(stage: &str) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os("NOVA_DIAGNOSTIC_LOG") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(f, "[engine-entry] {stage}");
+        }
+    }
+}
 use horizon_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) mod dedicated_arguments;
 pub(crate) mod runtime_environment;
@@ -24,6 +33,7 @@ impl Startup {
 pub fn prepare() -> Startup {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     horizon_mod_package::holder::enter();
+    game::exit_if_supervisor_is_gone();
     let result: crate::Result<_> = (|| {
         let mut command = std::process::Command::new(std::env::current_exe()?);
         command.args(std::env::args_os().skip(1));
@@ -100,6 +110,7 @@ pub fn start<G>(
     code: CodeRuntime,
     startup: Startup,
 ) {
+    nova_entry_trace("main_with.begin");
     // The startup spans count from here, before the allocator, hooks and languages are set up.
     let started = std::time::Instant::now();
     let _ = CODE_RUNTIME.set(code);
@@ -231,7 +242,9 @@ pub fn start<G>(
     }
     install_client_hooks();
     raise_open_file_limit();
+    nova_entry_trace("game.run_with.begin");
     if let Err(error) = game::run_with(options, native) {
+        nova_entry_trace(&format!("game.run_with.error: {error}"));
         // A bad command line is the caller's mistake, not a crash: no report.
         let missing_mods = game::dedicated::is_missing_mods_refusal(error.as_ref());
         let usage = error.is::<game::UsageError>() || missing_mods;

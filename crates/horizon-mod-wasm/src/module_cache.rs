@@ -167,7 +167,9 @@ impl ModuleCache {
         bytes: &[u8],
     ) -> wasmtime::Result<(Module, Source)> {
         #[cfg(unix)]
-        let child = if cfg!(test) {
+        // iOS cannot spawn a new instance of the app as a wasm compiler.
+        // Do not change the bounded child-compiler path on desktop.
+        let child = if cfg!(any(test, target_os = "ios")) {
             None
         } else {
             Some((

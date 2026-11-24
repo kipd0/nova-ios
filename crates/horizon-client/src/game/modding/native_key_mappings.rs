@@ -60,9 +60,8 @@ impl Game<'_> {
         let key = key.unwrap_or("key.keyboard.unknown");
         self.native_input_key(key, layout_key, raw_code, action, modifiers);
     }
-    /// The control socket's `key KEY down|up|tap|repeat`, through `key_input` as a window key
-    /// goes: a tap is a press, then a release. A script types on a QWERTY layout.
-    pub(super) fn socket_key_input(&mut self, key: KeyCode, action: &str) {
+    /// A virtual key has a fixed QWERTY identity and no OS layout event.
+    pub(super) fn virtual_key_input(&mut self, key: KeyCode, action: mod_api::KeyAction) {
         let name = horizon_client::keybinds::key_name(key);
         let layout_key = match key {
             KeyCode::Backquote
@@ -81,6 +80,17 @@ impl Game<'_> {
         };
         let raw_code =
             horizon_client::keybinds::raw_key_code(winit::keyboard::PhysicalKey::Code(key));
+        self.key_input(
+            name,
+            layout_key,
+            raw_code,
+            action,
+            glfw_modifiers(self.modifiers),
+        );
+    }
+    /// The control socket's `key KEY down|up|tap|repeat`, through `key_input` as a window key
+    /// goes: a tap is a press, then a release. A script types on a QWERTY layout.
+    pub(super) fn socket_key_input(&mut self, key: KeyCode, action: &str) {
         let actions: &[mod_api::KeyAction] = match action {
             "down" => &[mod_api::KeyAction::Press],
             "repeat" => &[mod_api::KeyAction::Repeat],
@@ -88,8 +98,7 @@ impl Game<'_> {
             _ => &[mod_api::KeyAction::Press, mod_api::KeyAction::Release],
         };
         for action in actions {
-            let modifiers = glfw_modifiers(self.modifiers);
-            self.key_input(name, layout_key, raw_code, *action, modifiers);
+            self.virtual_key_input(key, *action);
         }
     }
     /// The same as a key's for a mouse button (`MouseHandler.onButton`).

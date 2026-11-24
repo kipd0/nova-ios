@@ -395,13 +395,8 @@ fn inspect_current() -> Result<(), &'static str> {
             let mut size = 0;
             let result = libc::pthread_attr_getstacksize(&attr, &mut size);
             libc::pthread_attr_destroy(&mut attr);
-            if result != 0 {
-                return unmeasured(
-                    "cannot inspect the calling thread stack: pthread_attr_getstacksize failed",
-                );
-            }
-            if size < REQUIRED {
-                return too_small(size, "pthread_getattr_np");
+            if result != 0 || size < GUEST_STACK_BYTES + HOST_HEADROOM {
+                return Err("GuestStackUnavailable: calling thread stack is below the guest reservation");
             }
         }
     }
@@ -409,39 +404,8 @@ fn inspect_current() -> Result<(), &'static str> {
     {
         // SAFETY: pthread_self names the live calling thread.
         let size = unsafe { libc::pthread_get_stacksize_np(libc::pthread_self()) };
-        // SAFETY: pthread_main_np only reads the calling thread's identity.
-        if size < REQUIRED && unsafe { libc::pthread_main_np() } == 0 {
-            return too_small(size, "pthread_get_stacksize_np");
-        }
-        if size < REQUIRED {
-            // For the main thread libpthread answers the soft stack limit unless the stack it was
-            // told about has exactly one guard page: an x86_64 game under Rosetta 2 got 8176 KiB
-            // (the default soft limit) though it links a larger `-stack_size`. The mapping decides:
-            // the room below this frame, which is why macOS links more than REQUIRED.
-            let anchor = 0u8;
-            let anchor = std::hint::black_box(&raw const anchor).addr();
-            let pthread = format!(
-                "pthread_get_stacksize_np says {} KiB, the soft stack limit is {}",
-                size / 1024,
-                soft_stack_limit()
-            );
-            match mapped_stack(anchor, REQUIRED, vm_region) {
-                Ok(mapped) if mapped >= REQUIRED => {}
-                Ok(mapped) => {
-                    return refuse(format!(
-                        "the main thread has {} KiB of stack below this frame, needs {} KiB (its \
-                         mapped stack regions; {pthread})",
-                        mapped / 1024,
-                        REQUIRED / 1024
-                    ));
-                }
-                Err(why) => {
-                    return refuse(format!(
-                        "cannot measure the main thread's stack: {why}; needs {} KiB ({pthread})",
-                        REQUIRED / 1024
-                    ));
-                }
-            }
+        if size < GUEST_STACK_BYTES + HOST_HEADROOM {
+            return Err("GuestStackUnavailable: calling thread stack is below the guest reservation");
         }
     }
     #[cfg(windows)]
@@ -450,8 +414,8 @@ fn inspect_current() -> Result<(), &'static str> {
         let mut high = 0;
         // SAFETY: both pointers refer to writable stack bounds.
         unsafe { get_current_thread_stack_limits(&mut low, &mut high) };
-        if high - low < REQUIRED {
-            return too_small(high - low, "GetCurrentThreadStackLimits");
+        if high - low < GUEST_STACK_BYTES + HOST_HEADROOM {
+            return Err("GuestStackUnavailable: calling thread stack is below the guest reservation");
         }
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]

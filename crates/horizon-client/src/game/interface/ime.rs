@@ -47,7 +47,7 @@ impl Game<'_> {
 
     /// Allow the input method only while a text box has focus.
     pub(super) fn sync_ime(&mut self) {
-        let want = self.text_field_focused();
+        let want = self.text_field_focused() && !cfg!(target_os = "ios");
         if want != self.ime_allowed
             && let Some(window) = &self.window
         {

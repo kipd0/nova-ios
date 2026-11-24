@@ -2,6 +2,7 @@
 //! (`GameCpuResources`, `EntityModels`), what the background loader publishes (`Loaded`,
 //! `LoaderMsg`), the world's rest loader and a pending world entry, the ordinary launch
 //! (`run_loading`) and the smoke run's report (`write_report`).
+use super::resource_load::Step;
 use super::*;
 
 /// CPU-only startup data, owned by one loader generation. No file reads or
@@ -64,7 +65,12 @@ impl GameCpuResources {
     pub(super) fn load(
         resources: &horizon_assets::resource_source::ResourceRoot,
         document: Option<&horizon_client::mobs::EntityModelDocument>,
+        role: execution_role::ExecutionRole,
     ) -> Result<Self> {
+        // Each guest-capable worker reserves 136 MiB. When the iOS client is already
+        // running, use the integrated server's guest-sized stack for these loads.
+        let parallel =
+            !(cfg!(target_os = "ios") && role == execution_role::ExecutionRole::IntegratedServer);
         let root = resources.prepared();
         let owned_document;
         let document = match document {
@@ -87,25 +93,26 @@ impl GameCpuResources {
             cart_models,
             creative_screen,
         ) = std::thread::scope(|scope| {
-            let painting_variants = named_scope(scope, "game_cpu.paintings", move || {
+            let painting_variants = Step::spawn(scope, parallel, "game_cpu.paintings", move || {
                 paintings::PaintingVariants::load(root)
             });
-            let frames = named_scope(scope, "game_cpu.frames", move || {
+            let frames = Step::spawn(scope, parallel, "game_cpu.frames", move || {
                 frames::bake_frames(resources.source())
             });
-            let armor_stand_assets = named_scope(scope, "game_cpu.armor_stands", move || {
-                armor_stands::ArmorStandAssets::load(resources.source(), document)
-            });
-            let waypoint_styles = named_scope(scope, "game_cpu.waypoints", move || {
+            let armor_stand_assets =
+                Step::spawn(scope, parallel, "game_cpu.armor_stands", move || {
+                    armor_stands::ArmorStandAssets::load(resources.source(), document)
+                });
+            let waypoint_styles = Step::spawn(scope, parallel, "game_cpu.waypoints", move || {
                 horizon_client::locator_bar::WaypointStyles::load(resources.source())
             });
-            let boat_models = named_scope(scope, "game_cpu.boats", move || {
+            let boat_models = Step::spawn(scope, parallel, "game_cpu.boats", move || {
                 boats::BoatModels::load(document)
             });
-            let cart_models = named_scope(scope, "game_cpu.carts", move || {
+            let cart_models = Step::spawn(scope, parallel, "game_cpu.carts", move || {
                 minecarts::CartModels::load(document)
             });
-            let creative_screen = named_scope(scope, "game_cpu.creative", move || {
+            let creative_screen = Step::spawn(scope, parallel, "game_cpu.creative", move || {
                 let mut creative = Creative::load(root).map_err(|error| error.to_string())?;
                 let tab_modifiers =
                     horizon_client::polytone_creative_tabs::TabModifier::read_all(root);
@@ -113,27 +120,13 @@ impl GameCpuResources {
                 Ok::<_, String>(creative)
             });
             (
-                painting_variants
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                frames
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                armor_stand_assets
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                waypoint_styles
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                boat_models
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                cart_models
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                creative_screen
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                painting_variants.join(),
+                frames.join(),
+                armor_stand_assets.join(),
+                waypoint_styles.join(),
+                boat_models.join(),
+                cart_models.join(),
+                creative_screen.join(),
             )
         });
         let [
@@ -265,6 +258,7 @@ pub(super) fn run_loading(
     pack_error: Option<String>,
     started: Instant,
 ) -> Result<()> {
+    loading_screen::nova_diag("resources.loading.begin");
     let progress = Progress::new();
     let (receiver, loader) = startup_menu::spawn_loader(
         &options,
@@ -300,7 +294,11 @@ pub(super) fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    loading_screen::nova_diag("winit.event-loop.begin");
+    let event_loop = EventLoop::new()?;
+    loading_screen::nova_diag("winit.event-loop.created");
+    let result = event_loop.run_app(&mut app);
+    loading_screen::nova_diag("winit.run-app.returned");
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.

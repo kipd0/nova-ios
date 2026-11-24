@@ -1,0 +1,144 @@
+name: Nova IPA - WebAssembly mod support
+
+# Run manually from Actions. Set existing_run_id to reuse an already built Nova
+# IPA: only the Linux WebAssembly packaging job runs, no macOS build is requested.
+# Leave it blank to compile a fresh Nova IPA before adding the shared wasm std.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner for the Nova IPA build
+        type: choice
+        required: true
+        default: macos-26-intel
+        options:
+          - macos-26-intel
+          - macos-26
+          - macos-15-intel
+      existing_run_id:
+        description: "Optional: existing Actions run ID containing a nova IPA (skip iOS rebuild)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nova-wasm-mod-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ios-ipa:
+    # Skip the costly macOS compilation when reusing an existing Nova IPA.
+    if: ${{ inputs.existing_run_id == '' }}
+    uses: ./.github/workflows/ios-runtime-probe.yml
+    with:
+      runner: ${{ inputs.runner }}
+
+  attach-wasm-std:
+    needs: build-ios-ipa
+    # A skipped iOS build is expected only when reusing an existing run's IPA.
+    if: ${{ always() && (needs.build-ios-ipa.result == 'success' || (inputs.existing_run_id != '' && needs.build-ios-ipa.result == 'skipped')) }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Identify the existing IPA build and its exact source revision
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXISTING_RUN_ID: ${{ inputs.existing_run_id }}
+        run: |
+          set -euo pipefail
+          run_id="${EXISTING_RUN_ID:-$GITHUB_RUN_ID}"
+          if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::existing_run_id must be a numeric GitHub Actions run ID"
+            exit 1
+          fi
+          source_repo="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.head_repository.full_name')"
+          if [[ "$source_repo" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::error::The source IPA run must belong to this repository"
+            exit 1
+          fi
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.head_sha')"
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve the original IPA source commit"
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "Reusing IPA from run $run_id built from $source_sha"
+
+      - name: Check out exactly the IPA build's source revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Read Horizon's pinned Rust toolchain
+        id: rust
+        shell: bash
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust and wasm build dependencies
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rust-src
+          targets: wasm32-unknown-unknown
+
+      - name: Build the shared WebAssembly standard-library member
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wasm-std
+          # Upstream's workspace Cargo.lock can lag its manifests; allow Cargo
+          # to refresh it only in this temporary checkout (never committed).
+          cargo run -p cargo-horizon-mod -- wasm-std wasm-std/horizon-wasm-std.wasm
+          python3 - <<'PY'
+          from pathlib import Path
+          file = Path("wasm-std/horizon-wasm-std.wasm")
+          assert file.stat().st_size > 8, "Shared wasm std member is missing or empty"
+          assert file.open("rb").read(4) == b"\0asm", "Shared std member is not WebAssembly"
+          print(f"Built {file} ({file.stat().st_size} bytes)")
+          PY
+
+      - name: Download the unsigned Nova IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: nova
+          path: downloaded
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Add wasm std beside the Nova executable and verify IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s downloaded/nova.ipa
+          mkdir -p patched
+          unzip -q downloaded/nova.ipa -d patched
+          test -f patched/Payload/Nova.app/Nova
+          cp wasm-std/horizon-wasm-std.wasm patched/Payload/Nova.app/horizon-wasm-std.wasm
+          (
+            cd patched
+            zip -qry ../nova-wasm.ipa Payload
+          )
+          unzip -tq nova-wasm.ipa
+          unzip -p nova-wasm.ipa Payload/Nova.app/horizon-wasm-std.wasm |
+            cmp - wasm-std/horizon-wasm-std.wasm
+          if unzip -Z1 nova-wasm.ipa | grep -Ei '(assets/minecraft/|horizon-resources\.json|GameFiles\.zip)'; then
+            echo "::error::Game assets must not be bundled in Nova"
+            exit 1
+          fi
+          echo "Nova IPA contains the shared WebAssembly std member"
+
+      - name: Upload Nova IPA with WebAssembly mod support
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-wasm
+          path: nova-wasm.ipa
+          if-no-files-found: error
+          retention-days: 7

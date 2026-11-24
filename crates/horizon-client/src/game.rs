@@ -81,6 +81,7 @@ use window_handler::ClientQuit;
 // `Action` here is the title screen's buttons (`title::Action`).
 use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
+pub(crate) use graphics_tuning::exit_if_supervisor_is_gone;
 use horizon_client::actions::Action as Mapping;
 use horizon_client::spans::{startup, time as span};
 use horizon_client::{
@@ -1173,6 +1174,8 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    /// The registered input source, this player's own (`None`: the pad modules answer).
+    input_source: Option<Box<dyn horizon_client::input_source::InputSource>>,
     frames: u64,
     /// The glint clock and options, read once per frame (game/interface/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
@@ -6411,7 +6414,7 @@ impl Game<'_> {
         &self,
         chunks: impl IntoIterator<Item = &'a Arc<horizon_client::chunk::Chunk>>,
     ) -> Vec<Arc<horizon_client::chunk::Chunk>> {
-        horizon_client::save::chunks_with_block_entities(
+        horizon_client::save::chunks_with_revised_block_entities(
             chunks,
             &self.world.block_entities,
             &self.world.block_names,
@@ -7898,7 +7901,7 @@ impl Game<'_> {
     }
     /// Copy the live player and world state into the `Level` that gets saved.
     pub(super) fn sync_level(&mut self) {
-        self.level.player_impulse_grace = self.player.as_ref().map(|p| p.impulse.reset_grace_time);
+        self.level.player_impulse = self.player.as_ref().map(|p| p.impulse);
         self.level.player_fall_particles = self
             .player
             .as_ref()
@@ -10217,7 +10220,9 @@ impl Game<'_> {
                         Screen::Playing => {
                             if pressed && !self.captured {
                                 self.capture(true);
-                                return Ok(());
+                                if !cfg!(target_os = "ios") {
+                                    return Ok(());
+                                }
                             }
                             let input = horizon_client::keybinds::mouse_name(button);
                             if self.key_mapping_canceled(Some(input.as_str()), pressed) {
@@ -10651,47 +10656,7 @@ impl Game<'_> {
                         return Ok(());
                     };
                     let pressed = event.state == ElementState::Pressed;
-                    if self.key_press_canceled(key, pressed, event.repeat) {
-                        return Ok(());
-                    }
-                    self.native_panel_key_event(
-                        key,
-                        event.state == ElementState::Pressed,
-                        event.repeat,
-                    );
-                    // Screen.keyPressed sees the physical key, repeats included.
-                    if event.state == ElementState::Pressed
-                        && self.screen == Screen::Inventory
-                        && (self.merchant_key(key) || self.recipe_book_key(key))
-                    {
-                        return Ok(());
-                    }
-                    if event.state == ElementState::Pressed
-                        && !event.repeat
-                        && horizon_client::keybinds::key_name(key)
-                            .is_some_and(|n| self.settings.keys.get("key.smoothCamera") == n)
-                    {
-                        self.smooth_camera_action();
-                    }
-                    // `key.fullbright` is Horizon's, unbound by default: no vanilla mapping
-                    // translates it, so its press is taken here. It is not swallowed: a key it
-                    // shares with a mapping still drives that mapping, as vanilla runs every
-                    // mapping bound to a key.
-                    if event.state == ElementState::Pressed
-                        && !event.repeat
-                        && let Some(name) = horizon_client::keybinds::key_name(key)
-                    {
-                        self.fullbright_key_press(name);
-                    }
-                    // ScreenEvent.KeyPressed.Post / KeyReleased.Post: no screen arm
-                    // took the key, so the open screen's `keyPressed` returned
-                    // false; a cancel marks it handled and the game's own key
-                    // handling never sees it.
-                    if self.screen_key_post(key, event.state == ElementState::Pressed, event.repeat)
-                    {
-                        return Ok(());
-                    }
-                    self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
+                    self.unhandled_key(key, pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
                     horizon_client::spans::time("recover_device", || self.recover_device())?;
@@ -11070,6 +11035,7 @@ impl<'a> Game<'a> {
                     pack.source.clone(),
                 ),
                 None,
+                options.execution_role,
             )
         })?;
         let world = Game::world_for_mods(res.facts().air, 0);
@@ -11079,7 +11045,7 @@ impl<'a> Game<'a> {
         let creative = options.creative;
         let inventory = vec![None; 36];
         let now = Instant::now();
-        let look = options.look;
+        let (look, role) = (options.look, options.execution_role);
         let slow_frame_ms = options
             .spikes
             .unwrap_or(horizon_client::client_perf::SLOW_FRAME_MS);
@@ -11242,6 +11208,7 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            input_source: play_input::input_source(role),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

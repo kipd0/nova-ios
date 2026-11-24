@@ -9,6 +9,8 @@ pub mod gamepad;
 pub mod gameplay_guide;
 pub mod held;
 pub mod input;
+#[cfg(target_os = "ios")]
+pub mod ios_input;
 pub mod input_queue;
 pub mod input_source;
 pub mod interaction_input;
