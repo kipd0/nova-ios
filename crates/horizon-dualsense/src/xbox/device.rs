@@ -1,6 +1,7 @@
 //! The pad over hidapi and Windows.Gaming.Input, and the thread that writes to it: writes block
 //! (a Bluetooth report can take milliseconds), so the game only hands over what the pad should
 //! do.
+#[cfg(not(target_os = "ios"))]
 use crate::dualshock;
 #[cfg(windows)]
 use crate::xbox::wgi;
@@ -72,6 +73,7 @@ pub enum Transport {
 }
 
 /// Which pad a [`Xbox`] drives, and so which reports it writes.
+#[cfg(not(target_os = "ios"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Frame {
     /// An Xbox One pad's GIP reports (SDL's `SDL_hidapi_xboxone.c`), or Windows.Gaming.Input.
@@ -306,7 +308,7 @@ fn write_bluetooth(device: &HidDevice, report: &[u8]) -> std::result::Result<(),
 }
 
 /// Everywhere else the interrupt-out pipe is the path hidapi and SDL take, and it delivers.
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "ios")))]
 fn write_bluetooth(device: &HidDevice, report: &[u8]) -> std::result::Result<(), HidError> {
     device.write(report).map(|_| ())
 }
@@ -314,6 +316,7 @@ fn write_bluetooth(device: &HidDevice, report: &[u8]) -> std::result::Result<(),
 /// Which collection the reports go to, when `HORIZON_CONTROLLER_LOG` asks: a DualShock 4 lists a
 /// gamepad collection (usage page 1, usage 5) and a vendor-specific one, and only the gamepad one
 /// carries output.
+#[cfg(not(target_os = "ios"))]
 fn log_open(info: &hidapi::DeviceInfo, frame: Frame, transport: Transport) {
     if std::env::var_os("HORIZON_CONTROLLER_LOG").is_some() {
         log::info!(
