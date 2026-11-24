@@ -7,6 +7,9 @@ mod below_world;
 mod friction_tests;
 #[cfg(test)]
 mod lifetime_tests;
+mod physics;
+#[cfg(test)]
+mod physics_tests;
 mod placement;
 pub(super) use placement::OutlineFluidRay;
 
@@ -15,7 +18,6 @@ pub(super) use horizon_gameplay::boats::*;
 
 use super::{Game, InteractTarget, entity::Entity, entity_culling::at, view_vector};
 use horizon_client::actions::Action;
-use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -165,7 +167,10 @@ impl Game<'_> {
     fn water_level_above(&self, b: &Boat) -> f32 {
         let bb = b.bounds();
         let (lo, hi) = (bb.min_position(), bb.max_position());
-        let (y0, y1) = (hi.y.floor() as i32, hi.y.ceil() as i32);
+        // AbstractBoat.getWaterLevelAbove: ceil(maxY - lastYd), so a boat
+        // falling into water scans up to the real surface instead of stopping
+        // one row short.
+        let (y0, y1) = (hi.y.floor() as i32, (hi.y - b.last_yd).ceil() as i32);
         'rows: for y in y0..y1 {
             let mut height = 0.0f32;
             for x in lo.x.floor() as i32..hi.x.ceil() as i32 {
@@ -357,8 +362,9 @@ impl Game<'_> {
         }
         b.fall_distance
     }
-    /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
-    pub(super) fn tick_boat(&mut self, mut b: Boat, controlled: bool) -> Boat {
+    /// `AbstractBoat.tick` for one boat (the driver supplies current rider input).
+    pub(super) fn tick_boat(&mut self, mut b: Boat, rider: Option<super::Keys>) -> Boat {
+        let controlled = rider.is_some();
         b.previous = b.position;
         b.previous_yaw = b.yaw;
         // Entity.baseTick ends with Leashable.tickLeash, on a server only
@@ -392,12 +398,18 @@ impl Game<'_> {
         {
             b.fall_distance = 0.0;
         }
-        // floatBoat
-        // `-getGravity()`: none with NoGravity.
-        let mut vspeed = 0.0 - b.get_gravity();
-        let mut buoyancy = 0.0;
-        let inv_friction: f32;
-        let obstacles = self.boat_move_obstacles(&b);
+        let mut physics = physics::vanilla(&b);
+        let custom_movement = if let Some(keys) = rider
+            && mod_api::__private::listened(mod_api::HookId::ControlledBoatPhysics)
+        {
+            let vanilla = physics;
+            self.native_controlled_boat_physics(&physics::control(&b, keys.jump), &mut physics);
+            physics::validate(&mut physics, vanilla);
+            physics != vanilla
+        } else {
+            false
+        };
+        let vanilla_obstacles = (!custom_movement).then(|| self.boat_move_obstacles(&b));
         let mut scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -430,53 +442,42 @@ impl Game<'_> {
             }
             b.status = Status::InWater;
         } else {
-            match b.status {
-                Status::InWater => {
-                    buoyancy = (b.water_level - b.position.y) / HEIGHT;
-                    inv_friction = 0.9;
-                }
-                Status::UnderFlowingWater => {
-                    vspeed = -7.0e-4;
-                    inv_friction = 0.9;
-                }
-                Status::UnderWater => {
-                    buoyancy = f64::from(0.01_f32);
-                    inv_friction = 0.45;
-                }
-                Status::InAir => inv_friction = 0.9,
-                Status::OnLand => {
-                    inv_friction = b.land_friction;
-                    if controlled {
-                        b.land_friction /= 2.0;
-                    }
-                }
+            if b.status == Status::OnLand && controlled {
+                b.land_friction /= 2.0;
             }
-            let f = f64::from(inv_friction);
-            b.velocity = Vec3::new(b.velocity.x * f, b.velocity.y + vspeed, b.velocity.z * f);
-            b.delta_rotation *= inv_friction;
-            if buoyancy > 0.0 {
-                b.velocity.y = (b.velocity.y + buoyancy * (0.04 / 0.65)) * 0.75;
+            let f = f64::from(physics.drag);
+            b.velocity = Vec3::new(
+                b.velocity.x * f,
+                b.velocity.y + (0.0 - physics.gravity),
+                b.velocity.z * f,
+            );
+            b.delta_rotation *= physics.drag;
+            if physics.buoyancy > 0.0 {
+                b.velocity.y = (b.velocity.y + physics.buoyancy * (0.04 / 0.65)) * 0.75;
             }
+        }
+        if physics.vertical_impulse != 0.0 {
+            b.velocity.y += physics.vertical_impulse;
         }
         // controlBoat
         if controlled {
             let [left, right, up, down] = b.input;
             let mut acceleration = 0.0f32;
             if left {
-                b.delta_rotation -= 1.0;
+                b.delta_rotation -= physics.turn;
             }
             if right {
-                b.delta_rotation += 1.0;
+                b.delta_rotation += physics.turn;
             }
             if right != left && !up && !down {
-                acceleration += 0.005;
+                acceleration += physics.paddle_turn;
             }
             b.yaw += b.delta_rotation;
             if up {
-                acceleration += 0.04;
+                acceleration += physics.forward;
             }
             if down {
-                acceleration -= 0.005;
+                acceleration -= physics.backward;
             }
             let (x, z) = paddle_push(b.yaw, acceleration);
             b.velocity.x += x;
@@ -487,12 +488,24 @@ impl Game<'_> {
         // among them (`CollisionGetter.borderCollision`). The boat's own move
         // is a self move (arismoko/horizon#2414: vanilla's `AbstractBoat.tick` passes SELF);
         // PR 1a records the movement unchanged.
+        let movement = b.take_movement();
+        let obstacles = vanilla_obstacles.unwrap_or_else(|| {
+            if !physics.collide_entities {
+                return Vec::new();
+            }
+            // Include the whole modded sweep and space above it for stepping.
+            let area = horizon_core::geometry::entity_collision_bounds(
+                movement,
+                b.bounds(),
+                physics.step_height,
+            );
+            self.boat_obstacles(b.id, area)
+        });
         let mut scene = EntityCollisions {
             blocks: scene,
             entities: &obstacles,
             border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
-        let movement = b.take_movement();
         let mut gate = horizon_client::move_gate::armed_with(
             &self.loop_context,
             b.id,
@@ -506,7 +519,7 @@ impl Game<'_> {
             &mut scene,
             b.bounds(),
             movement,
-            0.0,
+            physics.step_height,
             b.on_ground,
         ) {
             b.fall_distance = self.vehicle_fall_reset(b.fall_distance, b.position, moved);
@@ -516,6 +529,8 @@ impl Game<'_> {
                 b.position.z + moved.z,
             );
             b.on_ground = movement.y < 0.0 && moved.y > movement.y;
+            // checkFallDamage saves lastYd before the collisions below zero it.
+            b.last_yd = b.velocity.y;
             b.fall_distance = self.boat_fall(&b, moved.y);
             if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
@@ -656,7 +671,7 @@ impl Game<'_> {
                     let section_step = self.with_entity_held_out(id, |game| {
                         let b = game.boats[i].clone();
                         let from = b.position;
-                        let b = game.tick_boat(b, false);
+                        let b = game.tick_boat(b, None);
                         let to = b.position;
                         game.store_boat_back(i, b).then_some((from, to))
                     });
@@ -1373,11 +1388,7 @@ impl Game<'_> {
             self.swing_arm();
             return true;
         }
-        if sneaking
-            || self.boats[i].out_of_control >= 60.0
-            || self.ridden_by_guest(self.boats[i].id)
-            || !self.boat_has_room(i)
-        {
+        if sneaking || self.boats[i].out_of_control >= 60.0 || !self.boat_has_room(i) {
             return false;
         }
         let id = self.boats[i].id;
@@ -1543,6 +1554,19 @@ impl Game<'_> {
         );
     }
 
+    /// `VehicleEntity.destroy(level, dropItem)`: the boat's item, carrying
+    /// the vehicle's `CustomName` as `DataComponents.CUSTOM_NAME`, like
+    /// the minecart's `cart_drop`.
+    fn boat_drop(&self, id: u32, item: &str) -> ItemStack {
+        let mut stack = ItemStack::new(item, 1);
+        if let Some(name) = self.persist_raw(id).and_then(|raw| raw.get("CustomName")) {
+            let text = horizon_client::entity_nbt::name_text(name);
+            stack.data_mut().custom_name =
+                Some(horizon_client::scoreboard::component_tag(&text.component()));
+        }
+        stack
+    }
+
     pub(super) fn hurt_boat_result(
         &mut self,
         i: usize,
@@ -1639,16 +1663,7 @@ impl Game<'_> {
                     .bool_at(horizon_client::gamerules::vanilla::ENTITY_DROPS)
             {
                 let item = b.entity_type();
-                self.spawn_item_own(
-                    ItemStack {
-                        item: Arc::from(item.as_str()),
-                        count: 1,
-                        damage: 0,
-                        extra: None,
-                    },
-                    at,
-                    10,
-                );
+                self.spawn_item_own(self.boat_drop(id, item.as_str()), at, 10);
                 // AbstractChestBoat.destroy: `chestVehicleDestroyed` drops the
                 // emptied chest again, which only draws each slot's spot.
                 if b.chest {
@@ -1662,11 +1677,17 @@ impl Game<'_> {
     }
     /// AbstractBoatRenderer.
     pub(super) fn boat_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
+        if self.boats.is_empty() {
+            return;
+        }
         let a = alpha as f32;
         let range = super::entity_culling::default_range(
             glam::DVec3::new(WIDTH, HEIGHT, WIDTH),
             self.view_scale(),
         );
+        let mut poses = Poses::pooled();
+        let mut patch_poses = Option::<horizon_client::mobs::anim::PooledPoses>::None;
+        let mut sprite = String::with_capacity(32);
         for b in &self.boats {
             // LevelExtractor: the camera entity is not drawn from its own eyes.
             if self.hides_as_camera(b.id) {
@@ -1693,12 +1714,18 @@ impl Game<'_> {
             let Some(model) = models.get(&*b.wood) else {
                 continue;
             };
-            let folder = if b.chest { "chest_boat" } else { "boat" };
+            sprite.clear();
+            sprite.push_str(if b.chest {
+                "entity/chest_boat/"
+            } else {
+                "entity/boat/"
+            });
+            sprite.push_str(&b.wood);
             let Some(uv) = self
                 .gui
                 .atlas
                 .sprites
-                .get(&format!("entity/{folder}/{}", b.wood))
+                .get(sprite.as_str())
                 .map(|r| [r.u0, r.v0, r.u1, r.v1])
             else {
                 continue;
@@ -1731,7 +1758,7 @@ impl Game<'_> {
             }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
-            let mut poses = Poses::new(model);
+            poses.reset(model);
             // AbstractBoatModel.animatePaddle
             for (side, name) in [(0usize, "left_paddle"), (1, "right_paddle")] {
                 if !poses.has(name) {
@@ -1775,10 +1802,15 @@ impl Game<'_> {
                     let (u, v) = ((r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0);
                     [u, v, u, v]
                 });
+                let pp = patch_poses.get_or_insert_with(|| {
+                    let mut p = Poses::pooled();
+                    p.reset(patch);
+                    p
+                });
                 horizon_client::mobs::render::draw(
                     patch,
                     base,
-                    &Poses::new(patch),
+                    pp,
                     white,
                     0xFFFF_FFFF,
                     packed,
@@ -1798,6 +1830,39 @@ mod tests {
 
     fn boat() -> Boat {
         Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
+    }
+
+    /// `AbstractBoat.getWaterLevelAbove` scans up to `ceil(maxY - lastYd)`,
+    /// with the velocity `checkFallDamage` saved before the move's collisions
+    /// zeroed it: a boat whose fall clips on the pool floor still finds the
+    /// water's surface, not the air a row higher.
+    #[test]
+    #[ignore = "daily"]
+    fn a_boat_landing_on_a_pool_floor_scans_up_to_the_water_surface() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+            );
+            let registry = &game.pack.assets.registry;
+            let water = registry.default_state("minecraft:water").unwrap();
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..3 {
+                for z in 0..3 {
+                    game.world.set(x, 199, z, stone).unwrap();
+                    game.world.set(x, 200, z, water).unwrap();
+                    game.world.set(x, 201, z, water).unwrap();
+                }
+            }
+            let mut b = boat();
+            b.position = Vec3::new(1.5, 200.2, 1.5);
+            b.velocity.y = -0.6;
+            let b = game.tick_boat(b, None);
+            assert_eq!(b.position.y, 200.0, "the fall clips on the floor");
+            assert_eq!(b.velocity.y, 0.0, "and the collision zeroes it");
+            // The source at y=201 has air above: 201 + 8/9.
+            assert_eq!(game.water_level_above(&b), 201.0 + 8.0 / 9.0);
+        });
     }
 
     /// `controlBoat`'s push with `Mth`'s sine table (`(float) Math.sin(i /
@@ -2085,13 +2150,13 @@ mod cobweb_tests {
         };
         let (mut in_web, mut outside) = (boat(8.5), boat(12.5));
         // The tick in the web sets the multiplier and resets the fall.
-        in_web = game.tick_boat(in_web, false);
-        outside = game.tick_boat(outside, false);
+        in_web = game.tick_boat(in_web, None);
+        outside = game.tick_boat(outside, None);
         let (web_fall, free_fall) = (in_web.fall_distance, outside.fall_distance);
         // The next move spends the multiplier.
         let (web_from, free_from) = (in_web.position, outside.position);
-        in_web = game.tick_boat(in_web, false);
-        outside = game.tick_boat(outside, false);
+        in_web = game.tick_boat(in_web, None);
+        outside = game.tick_boat(outside, None);
         let (web_moved, free_moved) = (
             in_web.position.subtract(web_from),
             outside.position.subtract(free_from),
@@ -2147,13 +2212,13 @@ mod cobweb_tests {
         let mut boat = Boat::new(1, Arc::from("oak"), Vec3::new(8.5, 64.0, 8.5), 0.0);
         // Far enough in one move to leave the cobweb's cell and reach the snow's.
         boat.velocity = Vec3::new(2.0, 0.0, 0.0);
-        boat = game.tick_boat(boat, false);
+        boat = game.tick_boat(boat, None);
         // The same boat without the stored multiplier: the next move is the full one.
         let mut free = boat.clone();
         free.stuck = Vec3::ZERO;
         let (from, free_from) = (boat.position, free.position);
-        boat = game.tick_boat(boat, false);
-        free = game.tick_boat(free, false);
+        boat = game.tick_boat(boat, None);
+        free = game.tick_boat(free, None);
         let (moved, free_moved) = (
             boat.position.subtract(from),
             free.position.subtract(free_from),
@@ -2173,6 +2238,33 @@ mod cobweb_tests {
             "powder snow's down multiplier: {} against {}",
             moved.y,
             free_moved.y
+        );
+    }
+}
+#[cfg(test)]
+mod drop_tests {
+    use crate::game::game_tests::tests::server_game;
+
+    /// `VehicleEntity.destroy`: a broken boat drops its item under the
+    /// vehicle's `CustomName` (`DataComponents.CUSTOM_NAME`).
+    #[test]
+    #[ignore = "daily"]
+    fn a_broken_boat_drops_its_item_under_its_name() {
+        let mut resources = None;
+        let mut game = server_game(&mut resources);
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command(r#"summon oak_boat 8.5 64 8.5 {CustomName:"Raft"}"#));
+        assert_eq!(game.boats.len(), 1);
+        assert_eq!(game.hurt_boat_result(0, 100.0, false, None), Some(true));
+        assert!(game.boats.is_empty(), "the boat is broken");
+        assert_eq!(game.dropped.len(), 1, "the boat item alone");
+        let stack = &game.dropped[0].stack;
+        assert_eq!(&*stack.item, "minecraft:oak_boat");
+        assert_eq!(
+            stack.custom_name().as_deref(),
+            Some("Raft"),
+            "the drop is named as the boat was"
         );
     }
 }
