@@ -227,7 +227,12 @@ fn real_member() {
                 &mut entity,
             );
             assert_eq!(entity.data, [23]);
-            mod_api::__private::resolve_items(["minecraft:snowball", "minecraft:bow"]).unwrap();
+            mod_api::__private::resolve_items([
+                "minecraft:snowball",
+                "minecraft:bow",
+                "minecraft:paper",
+            ])
+            .unwrap();
             lending::check_death(
                 &mut Quiet,
                 mod_api::__private::item_key("minecraft:bow").unwrap(),
