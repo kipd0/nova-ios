@@ -440,6 +440,17 @@ pub fn lease_units(
         .collect()
 }
 
+/// Platforms without the desktop runtime holder take no unit leases.
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub fn lease_units(
+    _executable: &Path,
+    _selection: &crate::selection::LaunchArguments,
+    _data: &Path,
+    _directory: &Path,
+) -> Result<Vec<Claim>, Error> {
+    Ok(Vec::new())
+}
+
 /// Fresh retained metadata and leases must never become later stdio replacement targets.
 pub(crate) fn retained(file: fs::File) -> io::Result<fs::File> {
     #[cfg(unix)]

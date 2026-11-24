@@ -29,7 +29,7 @@ fn ice_beside_bottom_slabs_keeps_vanilla_boat_speed() {
         boat.velocity = Vec3::new(0.0, 0.0, 0.35);
         boat.input = [false, false, true, false];
         for (tick, (z, speed)) in vanilla_ticks.into_iter().enumerate() {
-            boat = game.tick_boat(boat, true);
+            boat = game.tick_boat(boat, Some(Default::default()));
             assert_eq!(boat.position.y, 65.0, "tick {}", tick + 1);
             assert!(
                 (boat.position.z - z).abs() < 1e-10 && (boat.velocity.z - speed).abs() < 1e-10,
@@ -44,7 +44,7 @@ fn ice_beside_bottom_slabs_keeps_vanilla_boat_speed() {
         let mut boat = Boat::new(12, "oak".into(), Vec3::new(10.5, 64.5, 5.125), 0.0);
         boat.velocity = Vec3::new(0.0, 0.0, 0.35);
         boat.input = [false, false, true, false];
-        let boat = game.tick_boat(boat, true);
+        let boat = game.tick_boat(boat, Some(Default::default()));
         assert_eq!(boat.position, Vec3::new(10.5, 64.5, 5.3125));
         assert_eq!(boat.velocity, Vec3::ZERO);
     });
