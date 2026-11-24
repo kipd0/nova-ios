@@ -2204,6 +2204,39 @@ fn a_group_grows_past_256_mib_to_its_default_limit_and_goes_on_there() {
 }
 
 #[test]
+fn ios_memory_policy_supports_multiple_groups_and_growth_past_reservation() {
+    let mut config = wasmtime::Config::new();
+    super::without_threads(&mut config);
+    config.target("pulley64").unwrap();
+    super::configure_ios_memory(&mut config);
+    let engine = Engine::new(&config).unwrap();
+
+    // Each independent dependency group owns its own store and memory.
+    let mut first = Store::new(&engine, State::new(Limits::new("first".into(), 80)));
+    let mut second = Store::new(&engine, State::new(Limits::new("second".into(), 80)));
+    first.limiter(|state| &mut state.limits);
+    second.limiter(|state| &mut state.limits);
+    let a = Memory::new(&mut first, wasmtime::MemoryType::new(1, None)).unwrap();
+    let b = Memory::new(&mut second, wasmtime::MemoryType::new(1, None)).unwrap();
+    a.write(&mut first, 0, &[7]).unwrap();
+    b.write(&mut second, 0, &[9]).unwrap();
+
+    // Cross the 64 MiB initial reservation; the memory may relocate, but its
+    // contents and the other group's memory must remain intact.
+    assert_eq!(a.grow(&mut first, 65 * 16 - 1).unwrap(), 1);
+    assert_eq!(a.data(&first)[0], 7);
+    assert_eq!(b.data(&second)[0], 9);
+    a.write(&mut first, 65 * 1024 * 1024 - 1, &[11]).unwrap();
+    assert_eq!(a.data(&first)[65 * 1024 * 1024 - 1], 11);
+
+    // Smaller address-space reservations are not a new guest memory ceiling.
+    // The existing per-group resource limiter still refuses growth past 80 MiB.
+    assert!(a.grow(&mut first, 16 * 16).is_err());
+    assert_eq!(a.size(&first), 65 * 16);
+    assert_eq!(b.size(&second), 1);
+}
+
+#[test]
 fn a_lowered_limit_refuses_growth_inside_the_guest() {
     assert_eq!(grow_until_refused(64), 1_024);
 }

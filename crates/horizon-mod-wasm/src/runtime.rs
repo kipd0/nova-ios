@@ -176,12 +176,27 @@ pub(crate) fn test_engine() -> Engine {
     Engine::new(without_threads(&mut wasmtime::Config::new())).unwrap()
 }
 
+/// iOS may refuse Wasmtime's default 4 GiB virtual reservation for a second
+/// independent mod group. Reserve less address space up front and allow
+/// relocation on growth; the existing per-group Limits still cap guest memory.
+#[cfg(any(target_os = "ios", test))]
+fn configure_ios_memory(config: &mut wasmtime::Config) {
+    config
+        .memory_reservation(64 * 1024 * 1024)
+        .memory_reservation_for_growth(16 * 1024 * 1024)
+        .memory_guard_size(64 * 1024)
+        .memory_may_move(true);
+}
+
 /// The settings of the engine mods run on, without its epoch ticker.
 pub(crate) fn engine_config() -> wasmtime::Result<wasmtime::Config> {
     let mut config = wasmtime::Config::new();
     without_threads(&mut config);
     #[cfg(target_os = "ios")]
-    config.target("pulley64")?;
+    {
+        config.target("pulley64")?;
+        configure_ios_memory(&mut config);
+    }
     config.epoch_interruption(ENGINE_CONFIG.1);
     config.max_wasm_stack(horizon_guest_stack::GUEST_STACK_BYTES);
     // Wasmtime validates this bound even for synchronous engines. No async
