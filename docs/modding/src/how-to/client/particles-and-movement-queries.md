@@ -57,3 +57,31 @@ level-dependent shape inputs come from the actual level. To query the
 stored block, first read `level.block_state(host, pos)` and pass that state.
 This server read returns block-local boxes, or `None` for a
 stale handle, closed level or client. Parked levels are supported.
+
+## Driving a boat or raft
+
+Implement `Hooks::controlled_boat_physics` to tune a boat for one tick on the
+controlling player's client. Native and WebAssembly listeners receive the same
+`BoatControl` snapshot and mutable `BoatPhysics`. For example, to climb a
+one-block ledge and jump when the rider holds jump on land:
+
+```rust,ignore
+fn controlled_boat_physics(
+    &self,
+    _: &dyn mod_api::ClientHost,
+    event: &mut mod_api::ControlledBoatPhysicsEvent<'_>,
+) {
+    event.physics.step_height = 1.25;
+    if event.control.jump && event.control.on_ground {
+        event.physics.vertical_impulse = 0.36;
+    }
+}
+```
+
+The snapshot reports the entity ID, medium, position, velocity, yaw, latched
+paddles and current jump input. Set drag for the sampled medium, acceleration
+for each paddle action, downward gravity and lift, or entity collision for this
+move. Block and world-border collision still run. Each coefficient starts at
+its vanilla value for this tick. An out-of-range or non-finite result restores
+that field's original value. The normal vehicle packet carries the resolved
+position and yaw, subject to the server's usual movement checks.
