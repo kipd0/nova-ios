@@ -286,6 +286,16 @@ impl Hooks for Mod {
     }
 
     fn register(&self, registrar: &mut dyn mod_api::Registrar, cx: &mod_api::RegistrationContext) {
+        if cx.mods().get("raw_configuration_probe").is_some() {
+            registrar
+                .payload_handlers()
+                .registrar("1")
+                .configuration_raw(
+                    mod_api::PayloadId("example:configuration".into()),
+                    Some(mod_api::PayloadBytes(vec![0, 1, 128, 255])),
+                );
+            return;
+        }
         block_state_notice::register(registrar, cx);
         runtime_environment::register(cx);
         capability_registration::register(registrar, cx);

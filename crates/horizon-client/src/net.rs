@@ -11,6 +11,8 @@ pub mod ingress;
 mod known_packs;
 use known_packs::{fill_known_entries, select_known_packs};
 #[cfg(test)]
+mod configuration_raw_tests;
+#[cfg(test)]
 #[path = "net/mod_packet_tests.rs"]
 mod mod_packet_tests;
 pub(crate) mod queued_writer;
@@ -1694,6 +1696,16 @@ fn configure(
     let mut registries = Dynamic::default();
     let mut content_verified = false;
     payloads.begin_configuration();
+    if payloads.local.has_configuration_raw() {
+        crate::raw_payloads::Endpoint::client(
+            writer.clone(),
+            configuring.clone(),
+            payloads.clone(),
+            send.clone(),
+        )
+        .open_configuration_raw()
+        .map_err(Reason::plain)?;
+    }
     let mut negotiation =
         horizon_protocol::payload_negotiation::Negotiation::new(payloads.local.manifest.clone());
     crate::datapack_net::clear_received();
@@ -1898,6 +1910,7 @@ fn configure(
                 // negotiation: play on with nothing negotiated, as on a vanilla server.
                 // Only on the first configuration: a server that goes silent when it
                 // reconfigures is refused as before.
+                let received_offer = negotiation.accepted().is_some();
                 let silent = if initial {
                     negotiation.finish_allowing_silent_peer()
                 } else {
@@ -1909,7 +1922,7 @@ fn configure(
                         "The server did not answer horizon:payloads: Horizon's negotiated extensions are off"
                     );
                 }
-                if payloads.epoch().is_none() {
+                if !received_offer {
                     let accepted = negotiation
                         .accepted()
                         .expect("configuration barrier freezes negotiation");
@@ -2343,7 +2356,7 @@ mod tests {
         ));
     }
 
-    fn empty_item_data(name: &str) -> (PathBuf, Arc<ItemData>) {
+    pub(super) fn empty_item_data(name: &str) -> (PathBuf, Arc<ItemData>) {
         let root =
             std::env::temp_dir().join(format!("horizon-net-data-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

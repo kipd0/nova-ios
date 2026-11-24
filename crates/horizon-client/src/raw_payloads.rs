@@ -84,6 +84,8 @@ pub struct Local {
     /// Raw play channels (server side only), frozen at capture: each id's
     /// receiving mods in load order, empty for a send-only declaration.
     raw: HashMap<String, Vec<PayloadReceiver>>,
+    /// Raw client sends are configuration-only and do not select a registered codec.
+    configuration_raw: std::collections::HashSet<PayloadId>,
     // Shared by a server installation's connections: abandoned epochs must not
     // accumulate uncharged tables while the main executor is stalled.
     snapshot_budget: Option<(
@@ -134,7 +136,7 @@ impl Local {
         }
         engine::register(&mut manifest).map_err(|error| error.to_string())?;
         let manifest = manifest.finish().map_err(|error| error.to_string())?;
-        // Raw channels are a server's plugin-channel policy: a client sends none.
+        // Only the server installs raw play receivers.
         let raw: HashMap<_, _> = match (side, &registry) {
             (Side::Server, Some(registry)) => registry
                 .raw_channels()
@@ -144,6 +146,15 @@ impl Local {
         };
         let mut local = Self::new(manifest, registry);
         local.raw = raw;
+        if side == Side::Client
+            && let Some(registry) = &local.registry
+        {
+            local.configuration_raw.extend(
+                registry
+                    .configuration_raw_channels()
+                    .map(|(id, _)| id.clone()),
+            );
+        }
         Ok(Arc::new(local))
     }
     pub(crate) fn empty() -> Arc<Self> {
@@ -196,12 +207,18 @@ impl Local {
             registry,
             declarations,
             raw: HashMap::new(),
+            configuration_raw: Default::default(),
         }
     }
     /// Whether a connection needs per-connection state: a negotiated declaration,
     /// or a raw channel, which a vanilla peer also uses.
     pub fn has_declarations(&self) -> bool {
-        !self.manifest.entries().is_empty() || !self.raw.is_empty()
+        !self.manifest.entries().is_empty()
+            || !self.raw.is_empty()
+            || !self.configuration_raw.is_empty()
+    }
+    pub(crate) fn has_configuration_raw(&self) -> bool {
+        !self.configuration_raw.is_empty()
     }
     /// Whether a mod declared a negotiated payload, beside the engine's own declarations.
     /// Only then does a client open negotiation itself: otherwise it answers the server's
@@ -343,6 +360,13 @@ impl Peer {
     }
     /// Resolve local authority, phase, direction and peer support before preparing bytes.
     pub fn can_send(&self, phase: Phase, id: &PayloadId) -> Result<(), PayloadSendError> {
+        if self.side == Side::Client && self.local.configuration_raw.contains(id) {
+            return if phase == Phase::Configuration {
+                Ok(())
+            } else {
+                Err(PayloadSendError::WrongProtocol(id.clone()))
+            };
+        }
         // A raw channel needs no peer declaration: it goes to any client in play.
         if self.local.is_raw(&id.0) {
             return match (phase, self.side) {
