@@ -23,6 +23,7 @@ use super::{
 };
 use crate::blocks::Fluid;
 use crate::breathing::{Breath, breathe, drown, own_air};
+use crate::first_person::SwingAnimation;
 use crate::health::DamageLevel;
 use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
 use horizon_core::{
@@ -104,17 +105,9 @@ mod inside_walk_tests {
             bounce_on: |_, _, _, _, _| {},
             // The production binding's own shape: the whole callback staged,
             // a panic contained with it.
-            inside_fire: |_level,
-                          _dimension,
-                          _entity,
-                          _kind,
-                          _state,
-                          at,
-                          _precise,
-                          staged,
-                          _writes| {
+            inside_fire: |_level, _dimension, contact, _precise, _swept, staged, _writes| {
                 let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    fire_like_a_part(at, staged);
+                    fire_like_a_part(contact.position, staged);
                 }));
                 let _ = fired;
             },
@@ -489,16 +482,22 @@ impl Mob {
             6
         }
     }
-    /// `SwingState.startIfAble`: a swing past the first half of the current
-    /// one restarts it.
-    fn start_swing(&mut self, duration: i32) -> bool {
+    /// `SwingState.startIfAble`: a swing inside the first half of the current
+    /// one is refused. `swing_time` counts one behind `SwingState.ticks` (a
+    /// swing starts at -1 and `tick_swing` counts it up at the end of the
+    /// mob's tick, where vanilla's `SwingState.tick` runs at the start of
+    /// `baseTick`), so vanilla's `ticks > 0 && ticks <= durationTicks / 2` is
+    /// `swing_time >= 0 && swing_time < durationTicks / 2`.
+    fn start_swing(&mut self, animation: SwingAnimation, duration: i32) -> bool {
         let half = self.swing_duration() / 2;
-        if self.ai.swinging && self.ai.swing_time >= 0 && self.ai.swing_time < half {
+        let ticks = self.ai.swing_time + 1;
+        if self.ai.swinging && ticks > 0 && ticks <= half {
             return false;
         }
         self.ai.swing_time = -1;
         self.ai.swinging = true;
         self.ai.swing_duration = duration.max(1);
+        self.anim.swing_animation = animation;
         true
     }
     /// Whether the current swing is the off hand's (`swing_hand`'s arm
@@ -510,7 +509,7 @@ impl Mob {
     }
     /// LivingEntity.swing
     pub fn swing(&mut self) {
-        if self.start_swing(6) {
+        if self.start_swing(SwingAnimation::DEFAULT, 6) {
             self.extra.swing_right_arm = None;
             self.extra.swing_stab = false;
         }
@@ -518,7 +517,7 @@ impl Mob {
     /// `LivingEntity.swing(hand, animation, false)` for a swing of `duration`
     /// ticks (`getModifiedSwingDuration`): the arm is `hand.asArm(mainArm)`.
     pub fn swing_hand(&mut self, off_hand: bool, duration: i32) {
-        if self.start_swing(duration) {
+        if self.start_swing(SwingAnimation::DEFAULT, duration) {
             self.extra.swing_right_arm = Some(!off_hand != self.main_arm_left());
             self.extra.swing_stab = false;
         }
@@ -527,11 +526,7 @@ impl Mob {
     /// this mob's haste, conduit power or mining fatigue
     /// (`LivingEntity.getModifiedSwingDuration`). Whether the swing started
     /// (`SwingState.startIfAble`).
-    pub fn swing_hand_modified(
-        &mut self,
-        off_hand: bool,
-        animation: crate::first_person::SwingAnimation,
-    ) -> bool {
+    pub fn swing_hand_modified(&mut self, off_hand: bool, animation: SwingAnimation) -> bool {
         let amplifier = |id: &str| {
             self.extra
                 .effects
@@ -542,7 +537,7 @@ impl Mob {
         let dig_speed = amplifier("minecraft:haste").max(amplifier("minecraft:conduit_power"));
         let fatigue = amplifier("minecraft:mining_fatigue");
         let duration = crate::first_person::swing_duration(animation, dig_speed, fatigue);
-        if self.start_swing(duration) {
+        if self.start_swing(animation, duration) {
             self.extra.swing_right_arm = Some(!off_hand != self.main_arm_left());
             self.extra.swing_stab = animation.kind == 2;
             return true;
@@ -1013,6 +1008,22 @@ pub fn is_monster(s: Species) -> bool {
             | S::Warden
             | S::Wither
     )
+}
+/// `Entity.getSoundSource` for mobs: `Monster`'s own override is hostile, and
+/// so are a few mobs that are not `Monster`s (`Hoglin`, `Ghast`, `Phantom`,
+/// `Shulker` and the slimes). A killer bunny is hostile too; `Mob::sound_source`
+/// adds it from the variant.
+pub fn hostile_species(s: Species) -> bool {
+    is_monster(s)
+        || matches!(
+            s,
+            Species::Hoglin
+                | Species::Ghast
+                | Species::Phantom
+                | Species::Shulker
+                | Species::Slime
+                | Species::MagmaCube
+        )
 }
 /// One full entity tick. Returns false when the mob is gone.
 /// `Mob.getTarget` / `Mob.setTarget` (`asValidTarget`): a player in creative
@@ -1678,16 +1689,26 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
         {
             let mut staged = mod_api::InsideEffects::default();
             let mut writes = Vec::new();
-            let kind = self.m.kind.id.clone();
-            let id = self.m.id as i32;
+            let m = &*self.m;
             (hooks.inside_fire)(
                 self.level,
                 dimension,
-                id,
-                &kind,
-                state,
-                at,
+                crate::block_contact::Contact {
+                    entity: m.id as i32,
+                    kind: &m.kind.id,
+                    state,
+                    position: at,
+                },
                 precise,
+                &mod_api::SweptEntity::new(
+                    m.position,
+                    m.previous,
+                    m.velocity,
+                    m.extra.avatar_pose == crate::pose::Pose::Crouching,
+                    m.extra.crouching,
+                    m.fall_distance,
+                    true,
+                ),
                 &mut staged,
                 &mut writes,
             );
@@ -2164,6 +2185,8 @@ fn base_tick(
             touches_lava(m, w),
         )
     };
+    // LavaCauldronBlock.entityInside: LAVA_IGNITE and lavaHurt, as in lava.
+    let lava = lava || crate::entities::lava_cauldron_contacts(w.world, w.registry, m.bounds()) > 0;
     block_contact_damage(m, w, level, fire, lava);
     // Enderman.hurtServer and Shulker.hurtServer teleport inside the hurt
     // (fire, lava, a block, an effect).
@@ -6508,6 +6531,25 @@ mod burn_and_rose_tests {
                 assert_eq!(m.fire_ticks, 300);
             },
         );
+        assert!(ran, "the vanilla test resources must be available");
+    }
+
+    /// `LavaCauldronBlock.entityInside` ignites and hurts a mob standing in a
+    /// lava cauldron as lava does (#13100: a chicken farm's cauldron).
+    #[test]
+    #[ignore = "daily"]
+    fn a_lava_cauldron_burns_the_mob_inside_it() {
+        let build = build_with("minecraft:lava_cauldron");
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level();
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let mut m = golem(types);
+            let mut events = Vec::new();
+            let start = m.health;
+            base_tick(&mut m, w, level, &mut events);
+            assert_eq!(m.health, start - 4.0, "one lava hit");
+            assert_eq!(m.fire_ticks, 300, "ignited to the full time");
+        });
         assert!(ran, "the vanilla test resources must be available");
     }
 }
