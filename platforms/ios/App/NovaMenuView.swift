@@ -46,7 +46,7 @@ struct NovaMenuView: View {
                     HStack(alignment: .bottom, spacing: 0) {
                         VStack(spacing: gap) {
                             tile("custom controls", size: labelSize, action: onEdit)
-                            tile("mouse settings", size: labelSize, action: onSettings)
+                            tile("settings", size: labelSize, action: onSettings)
                             tile("logs", size: labelSize, action: onLogs)
                         }
                         .frame(width: columnWidth)

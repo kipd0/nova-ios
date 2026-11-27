@@ -9,6 +9,7 @@ struct LauncherView: View {
     @State private var showMetalDiagnostic = false
     @State private var showDiagnostics = false
     @State private var showTouchEditor = false
+    @State private var showSettings = false
     @State private var displayedDiagnostics = ""
     @State private var archiveName: String? = NovaGameFiles.stagedArchiveName()
     @State private var archiveMessage: String?
@@ -66,6 +67,11 @@ struct LauncherView: View {
                             .foregroundStyle(.white.opacity(0.75))
                             .multilineTextAlignment(.center)
                     }
+
+                    Button("Settings") {
+                        showSettings = true
+                    }
+                    .buttonStyle(.bordered)
 
                     Button("Touch Layout") {
                         showTouchEditor = true
@@ -189,6 +195,9 @@ struct LauncherView: View {
             }, onSave: { layout in
                 NovaDiagnostics.record("touch.layout.saved; buttons=\(layout.controls.count)")
             })
+        }
+        .fullScreenCover(isPresented: $showSettings) {
+            NovaTouchSettingsView(onDone: { showSettings = false })
         }
         .sheet(isPresented: $showDiagnostics) {
             VStack(spacing: 12) {

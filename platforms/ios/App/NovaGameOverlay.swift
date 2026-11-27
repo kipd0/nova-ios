@@ -558,7 +558,7 @@ final class NovaGameOverlay: NSObject, UITextFieldDelegate {
     }
 }
 
-private struct NovaTouchSettingsView: View {
+struct NovaTouchSettingsView: View {
     let onDone: () -> Void
     @State private var mouseScale =
         UserDefaults.standard.double(forKey: "nova.mouse.scale") == 0
@@ -589,21 +589,26 @@ private struct NovaTouchSettingsView: View {
                     Text("Buttons remain visible and usable while playing, but are excluded from screen recordings and screenshots on supported iOS versions.")
                         .font(.footnote)
                 }
+                NovaVoiceChatSettingsSection()
                 Section("Layouts") {
                     Text("JSON layouts are in Files → On My iPad → Nova → TouchLayouts.")
                         .font(.footnote)
                 }
             }
+            .onDisappear { NovaVoiceTests.shared.stopAll() }
             .navigationTitle("Nova Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
+                        NovaVoiceTests.shared.stopAll()
                         UserDefaults.standard.set(mouseScale, forKey: "nova.mouse.scale")
                         UserDefaults.standard.set(sensitivity, forKey: "nova.mouse.sensitivity")
                         UserDefaults.standard.set(touchGestures, forKey: "nova.touch.gestures")
                         UserDefaults.standard.set(hideButtonsFromRecording,
                                                   forKey: "nova.touch.hideButtonsFromRecording")
-                        nova_ios_set_touch_gestures(touchGestures)
+                        if horizon_ios_host_api_version() >= 2 && NovaGameFiles.resourcesPresent() {
+                            nova_ios_set_touch_gestures(touchGestures)
+                        }
                         onDone()
                     }
                 }
